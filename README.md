@@ -21,6 +21,12 @@ Requires Blockbench 5.0.5 or newer.
 
 **Resizing a stretched cube stays anchored.** Growing a cube's size by `d` used to move the anchored face by `(d / 2) * (1 - stretch)`. It now stays put — on the gizmo, the size sliders and keyboard nudges alike.
 
+**Vertex snap gains a Stretch mode.** Pick a corner, pick a target, and the cube stretches to reach it with the opposite corner anchored. Handy for closing the gap between two cubes at different angles.
+
+Core has a vertex snap *scale* mode, but it is gated behind `condition: () => !Format.integer_size`, so it is hidden and inert in the Hytale formats — and scaling would change the cube's size, which is what the integer size rule exists to prevent. Stretching reaches the same place while leaving size and UVs alone.
+
+Pick the mode from the dropdown in the Vertex Snap toolbar. It stretches on all three axes as needed, each anchored at its opposite face, and the undo bar offers the same ignore-axis options as the other modes. If the target sits behind the anchored face the stretch clamps just above zero rather than turning the cube inside out.
+
 ## Settings
 
 Under **Settings > Edit**:
@@ -76,4 +82,4 @@ Implementation is a wrapper around `TransformerModule.modules.edit` for the stre
 node test_anchored_stretch.js
 ```
 
-No dependencies. The harness mocks the parts of Blockbench the plugin touches, including copies of core's stretch and resize drag logic and the cube render formula, then simulates gizmo drags and checks which rendered faces moved and by how much. 53 cases covering both handle directions, inflate, off-centre and already-stretched cubes, multi-selection, the modifier factors, snapping independence, drift over long drags, undo/cancel, and clean unload.
+No dependencies. The harness mocks the parts of Blockbench the plugin touches, including copies of core's stretch and resize drag logic, the cube render formula, and enough of THREE for the vertex snap path, then simulates gizmo drags and snaps and checks which rendered faces moved and by how much. 68 cases covering both handle directions, inflate, off-centre, rotated and already-stretched cubes, multi-selection, the modifier factors, snapping independence, drift over long drags, undo/cancel, and clean unload.

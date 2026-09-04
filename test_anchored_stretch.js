@@ -252,6 +252,92 @@ function resizeOnAxis(modify, axis) {
 	});
 }
 
+// ---------------------------------------------------------------- vertex snap mocks
+
+/** Enough of THREE for the vertex snap path: Vector3 and unit Quaternions. */
+class Vector3 {
+	constructor(x = 0, y = 0, z = 0) { this.x = x; this.y = y; this.z = z; }
+	copy(v) { this.x = v.x; this.y = v.y; this.z = v.z; return this; }
+	set(x, y, z) { this.x = x; this.y = y; this.z = z; return this; }
+	add(v) { this.x += v.x; this.y += v.y; this.z += v.z; return this; }
+	sub(v) { this.x -= v.x; this.y -= v.y; this.z -= v.z; return this; }
+	toArray() { return [this.x, this.y, this.z]; }
+	fromArray(a) { this.x = a[0]; this.y = a[1]; this.z = a[2]; return this; }
+	applyQuaternion(q) { // three.js Vector3.applyQuaternion
+		const {x, y, z} = this;
+		const ix = q.w * x + q.y * z - q.z * y;
+		const iy = q.w * y + q.z * x - q.x * z;
+		const iz = q.w * z + q.x * y - q.y * x;
+		const iw = -q.x * x - q.y * y - q.z * z;
+		this.x = ix * q.w + iw * -q.x + iy * -q.z - iz * -q.y;
+		this.y = iy * q.w + iw * -q.y + iz * -q.x - ix * -q.z;
+		this.z = iz * q.w + iw * -q.z + ix * -q.y - iy * -q.x;
+		return this;
+	}
+}
+class Quaternion {
+	constructor(x = 0, y = 0, z = 0, w = 1) { this.x = x; this.y = y; this.z = z; this.w = w; }
+	copy(q) { this.x = q.x; this.y = q.y; this.z = q.z; this.w = q.w; return this; }
+	invert() { this.x *= -1; this.y *= -1; this.z *= -1; return this; } // unit quaternions only
+	static fromAxisAngle(axis, degrees) {
+		let half = (degrees * Math.PI / 180) / 2;
+		let s = Math.sin(half);
+		return new Quaternion(axis[0] * s, axis[1] * s, axis[2] * s, Math.cos(half));
+	}
+}
+const THREE = {Vector3, Quaternion};
+
+/** Gives a cube a mesh positioned at its origin, optionally rotated. */
+function attachMesh(cube, quaternion = new Quaternion()) {
+	cube.origin = cube.origin || [0, 0, 0];
+	cube.mesh = {
+		quaternion,
+		getWorldQuaternion(target) { return target.copy(quaternion); },
+		worldToLocal(v) {
+			v.sub({x: cube.origin[0], y: cube.origin[1], z: cube.origin[2]});
+			let inverse = new Quaternion().copy(quaternion).invert();
+			return v.applyQuaternion(inverse);
+		}
+	};
+	return cube;
+}
+
+const undo_log = [];
+const Undo = {
+	initEdit(aspects, amended) { undo_log.push({call: 'initEdit', amended: !!amended, aspects}); },
+	finishEdit(name) { undo_log.push({call: 'finishEdit', name}); },
+	amendEdit(form, callback) { undo_log.push({call: 'amendEdit', form}); Undo.last_amend = {form, callback}; },
+	last_amend: null
+};
+const canvas_updates = [];
+const Canvas = {updateView(options) { canvas_updates.push(options); }};
+const tl = key => key;
+class OutlinerElement {}
+
+let snap_calls = [];
+const Vertexsnap = {
+	step1: true,
+	elements: [],
+	groups: [],
+	move_origin: false,
+	vertex_pos: new Vector3(),
+	vertex_index: 0,
+	getGlobalVertexPos(element, vertex) { return new Vector3().fromArray(vertex); },
+	clearVertexGizmos() {},
+	snap(data, options = 0, amended) { snap_calls.push({data, options, amended, mode: BarItems.vertex_snap_mode.get()}); }
+};
+
+/** Minimal stand-in for core's BarSelect, matching how open()/trigger() read it. */
+BarItems.vertex_snap_mode = {
+	value: 'move',
+	values: ['move', 'scale', 'rotate'],
+	options: {move: true, scale: {condition: () => !Format.integer_size, name: true}, rotate: true},
+	get() { return this.value; },
+	set(key) { this.value = key; return this; }
+};
+
+Blockbench.showQuickMessage = function (text) { Blockbench.last_quick_message = text; };
+
 const registered = {};
 const Plugin = {
 	register(id, data) {
@@ -262,8 +348,21 @@ const Plugin = {
 
 Object.assign(globalThis, {
 	settings, Setting, Format, Toolbox, Outliner, Mesh, BarItems, Pressing, Blockbench,
-	trimFloatNumber, updateNslideValues, TransformerModule, Plugin, Cube
+	trimFloatNumber, updateNslideValues, TransformerModule, Plugin, Cube,
+	THREE, Vertexsnap, Undo, Canvas, OutlinerElement, tl
 });
+
+// Array.remove, used by the plugin when it takes its mode back out of the dropdown
+if (!Array.prototype.remove) {
+	Object.defineProperty(Array.prototype, 'remove', {
+		value: function (item) { let i = this.indexOf(item); if (i !== -1) this.splice(i, 1); return this; }
+	});
+}
+if (!Array.prototype.safePush) {
+	Object.defineProperty(Array.prototype, 'safePush', {
+		value: function (item) { if (!this.includes(item)) this.push(item); return this; }
+	});
+}
 
 // ---------------------------------------------------------------- load the plugin
 
@@ -1046,6 +1145,185 @@ test('turning one-sided stretch off also restores stock drag maths', () => {
 	assert.ok(close(cube.stretch[0], 2), 'stock stretch, got ' + cube.stretch[0]);
 });
 
+console.log('\nAnchored Stretch — vertex snap stretch mode\n');
+
+/**
+ * Run a vertex snap. `pick` is the world position of the corner being grabbed,
+ * `target` the world position it should land on.
+ */
+function vertexSnap(cubes, pick, target, {mode = 'stretch', options = 0, amended = false, move_origin = false} = {}) {
+	BarItems.vertex_snap_mode.set(mode);
+	Vertexsnap.elements = cubes;
+	Vertexsnap.groups = [];
+	Vertexsnap.move_origin = move_origin;
+	Vertexsnap.step1 = false;
+	Vertexsnap.vertex_pos = new Vector3().fromArray(pick);
+	undo_log.length = 0;
+	canvas_updates.length = 0;
+	snap_calls = [];
+	Vertexsnap.snap({element: cubes[0], vertex: target}, options, amended);
+}
+
+test('the Stretch mode is added to the vertex snap dropdown', () => {
+	let select = BarItems.vertex_snap_mode;
+	assert.ok(select.options.stretch, 'option present');
+	assert.strictEqual(select.options.stretch.name, 'Stretch', 'labelled');
+	assert.ok(select.values.includes('stretch'), 'in values, so wheel cycling reaches it');
+
+	Format.stretch_cubes = false;
+	assert.strictEqual(select.options.stretch.condition(), false, 'hidden outside stretch formats');
+	Format.stretch_cubes = true;
+	assert.strictEqual(select.options.stretch.condition(), true, 'shown in stretch formats');
+});
+
+test('pulling a high corner outward stretches that side only', () => {
+	let cube = attachMesh(new Cube({from: [0, 0, 0], to: [8, 8, 8]}));
+	let before = renderedBounds(cube);
+	vertexSnap([cube], [8, 8, 8], [10, 8, 8]);
+
+	assert.ok(close(cube.stretch[0], 1.25), 'stretch 1 + 2/8, got ' + cube.stretch[0]);
+	let after = renderedBounds(cube);
+	assertFace(after.from[0], before.from[0], 'low face stayed at 0');
+	assertFace(after.to[0], 10, 'high face reached the target');
+	assert.strictEqual(cube.size(0), 8, 'size untouched, so UVs are untouched');
+});
+
+test('pulling a low corner outward stretches the other way', () => {
+	let cube = attachMesh(new Cube({from: [0, 0, 0], to: [8, 8, 8]}));
+	vertexSnap([cube], [0, 0, 0], [-2, 0, 0]);
+
+	assert.ok(close(cube.stretch[0], 1.25), 'stretch 1.25, got ' + cube.stretch[0]);
+	let after = renderedBounds(cube);
+	assertFace(after.to[0], 8, 'high face stayed');
+	assertFace(after.from[0], -2, 'low face reached the target');
+});
+
+test('a corner dragged diagonally stretches all three axes', () => {
+	let cube = attachMesh(new Cube({from: [0, 0, 0], to: [8, 8, 8]}));
+	vertexSnap([cube], [8, 8, 8], [12, 10, 9]);
+
+	let after = renderedBounds(cube);
+	assertFace(after.to[0], 12, 'X reached');
+	assertFace(after.to[1], 10, 'Y reached');
+	assertFace(after.to[2], 9, 'Z reached');
+	assertFace(after.from[0], 0, 'X anchored');
+	assertFace(after.from[1], 0, 'Y anchored');
+	assertFace(after.from[2], 0, 'Z anchored');
+});
+
+test('inflate counts toward the reach', () => {
+	let cube = attachMesh(new Cube({from: [0, 0, 0], to: [8, 8, 8], inflate: 1}));
+	let before = renderedBounds(cube);
+	assertFace(before.to[0], 9, 'inflated corner starts at 9');
+	vertexSnap([cube], [9, 9, 9], [11, 9, 9]);
+
+	let after = renderedBounds(cube);
+	assertFace(after.to[0], 11, 'reached the target');
+	assertFace(after.from[0], -1, 'inflated low face stayed');
+	assert.ok(close(cube.stretch[0], 1 + 2 / 10), 'reach was 5, got stretch ' + cube.stretch[0]);
+});
+
+test('a cube that already has stretch snaps from where it is', () => {
+	let cube = attachMesh(new Cube({from: [0, 0, 0], to: [8, 8, 8], stretch: [1.5, 1, 1]}));
+	let before = renderedBounds(cube);
+	assertFace(before.to[0], 10, 'starts at 10');
+	vertexSnap([cube], [10, 8, 8], [13, 8, 8]);
+
+	let after = renderedBounds(cube);
+	assertFace(after.to[0], 13, 'reached');
+	assertFace(after.from[0], -2, 'anchored face stayed');
+});
+
+test('an off-centre cube with a non-zero origin still anchors correctly', () => {
+	let cube = attachMesh(new Cube({from: [4, -2, 1], to: [12, 6, 5]}));
+	cube.origin = [6, 1, 3];
+	let before = renderedBounds(cube);
+	vertexSnap([cube], [12, 6, 5], [15, 6, 5]);
+
+	let after = renderedBounds(cube);
+	assertFace(after.to[0], 15, 'reached');
+	assertFace(after.from[0], before.from[0], 'anchored face stayed at 4');
+});
+
+test('ignoring an axis leaves it alone', () => {
+	let cube = attachMesh(new Cube({from: [0, 0, 0], to: [8, 8, 8]}));
+	vertexSnap([cube], [8, 8, 8], [12, 10, 9], {options: {ignore_axis: {x: false, y: true, z: true}}});
+
+	let after = renderedBounds(cube);
+	assertFace(after.to[0], 12, 'X reached');
+	assert.ok(close(cube.stretch[1], 1) && close(cube.stretch[2], 1), 'Y and Z untouched');
+});
+
+test('a target behind the anchor clamps instead of inverting the cube', () => {
+	let cube = attachMesh(new Cube({from: [0, 0, 0], to: [8, 8, 8]}));
+	Blockbench.last_quick_message = null;
+	vertexSnap([cube], [8, 8, 8], [-20, 8, 8]);
+
+	assert.ok(cube.stretch[0] > 0, 'stretch stayed positive, got ' + cube.stretch[0]);
+	assertFace(renderedBounds(cube).from[0], 0, 'anchored face held even while clamped');
+	assert.ok(Blockbench.last_quick_message, 'told the user why it stopped');
+});
+
+test('a rotated cube snaps along its own axes', () => {
+	// +90 degrees about Y maps local +Z onto world +X, so a world +X pull
+	// becomes a local +Z stretch
+	let cube = attachMesh(new Cube({from: [0, 0, 0], to: [8, 8, 8]}), Quaternion.fromAxisAngle([0, 1, 0], 90));
+	vertexSnap([cube], [8, 8, 8], [10, 8, 8]);
+
+	assert.ok(close(cube.stretch[0], 1), 'X untouched, got ' + cube.stretch[0]);
+	assert.ok(close(cube.stretch[2], 1.25), 'Z took the stretch, got ' + cube.stretch[2]);
+});
+
+test('non-cube elements in the selection are skipped', () => {
+	let cube = attachMesh(new Cube({from: [0, 0, 0], to: [8, 8, 8]}));
+	let locator = {uuid: 'loc', mesh: cube.mesh, position: [0, 0, 0]};
+	vertexSnap([locator, cube], [8, 8, 8], [10, 8, 8]);
+
+	assert.ok(close(cube.stretch[0], 1.25), 'the cube still moved');
+	assert.deepStrictEqual(locator.position, [0, 0, 0], 'the locator was left alone');
+});
+
+test('the edit is wrapped in undo and offers the ignore-axis amend', () => {
+	let cube = attachMesh(new Cube({from: [0, 0, 0], to: [8, 8, 8]}));
+	vertexSnap([cube], [8, 8, 8], [10, 8, 8]);
+
+	assert.strictEqual(undo_log[0].call, 'initEdit', 'opened an edit');
+	assert.ok(undo_log.find(e => e.call === 'finishEdit' && e.name === 'Vertex snap stretch'), 'named the edit');
+	assert.ok(undo_log.find(e => e.call === 'amendEdit'), 'offered the amend form');
+	assert.ok(canvas_updates.length && canvas_updates[0].element_aspects.geometry, 'refreshed geometry');
+	assert.strictEqual(Vertexsnap.step1, true, 'reset for the next snap');
+});
+
+test('an amended re-run does not offer the form again', () => {
+	let cube = attachMesh(new Cube({from: [0, 0, 0], to: [8, 8, 8]}));
+	vertexSnap([cube], [8, 8, 8], [10, 8, 8], {amended: true});
+
+	assert.ok(undo_log[0].amended, 'initEdit told it is an amend');
+	assert.ok(!undo_log.find(e => e.call === 'amendEdit'), 'no second form');
+});
+
+test('other snap modes are left to core', () => {
+	for (let mode of ['move', 'scale', 'rotate']) {
+		let cube = attachMesh(new Cube({from: [0, 0, 0], to: [8, 8, 8]}));
+		vertexSnap([cube], [8, 8, 8], [10, 8, 8], {mode});
+		assert.strictEqual(snap_calls.length, 1, mode + ': delegated to core');
+		assert.deepStrictEqual(cube.stretch, [1, 1, 1], mode + ': untouched by us');
+	}
+});
+
+test('stretch mode is left to core outside stretch formats, and for origin snaps', () => {
+	let cube = attachMesh(new Cube({from: [0, 0, 0], to: [8, 8, 8]}));
+	Format.stretch_cubes = false;
+	vertexSnap([cube], [8, 8, 8], [10, 8, 8]);
+	Format.stretch_cubes = true;
+	assert.strictEqual(snap_calls.length, 1, 'delegated when the format has no stretch');
+
+	let cube2 = attachMesh(new Cube({from: [0, 0, 0], to: [8, 8, 8]}));
+	vertexSnap([cube2], [8, 8, 8], [10, 8, 8], {move_origin: true});
+	assert.strictEqual(snap_calls.length, 1, 'delegated when snapping the origin');
+	assert.deepStrictEqual(cube2.stretch, [1, 1, 1], 'and left the cube alone');
+});
+
 console.log('\nAnchored Stretch — teardown\n');
 
 test('unload restores all patches', () => {
@@ -1053,7 +1331,13 @@ test('unload restores all patches', () => {
 	let wrapped_on_move = module.onMove;
 	let wrapped_resize = Cube.prototype.resize;
 	let wrapped_calculate = module.calculateOffset;
+	let wrapped_snap = Vertexsnap.snap;
+	BarItems.vertex_snap_mode.set('stretch');
 	plugin.onunload();
+	assert.ok(Vertexsnap.snap !== wrapped_snap, 'Vertexsnap.snap restored');
+	assert.ok(!BarItems.vertex_snap_mode.options.stretch, 'mode removed from the dropdown');
+	assert.ok(!BarItems.vertex_snap_mode.values.includes('stretch'), 'and from values');
+	assert.strictEqual(BarItems.vertex_snap_mode.get(), 'move', 'active mode reset off the removed option');
 	assert.ok(module.onMove !== wrapped_on_move, 'onMove restored');
 	assert.ok(module.calculateOffset !== wrapped_calculate, 'calculateOffset restored');
 	assert.ok(Cube.prototype.resize !== wrapped_resize, 'resize restored');

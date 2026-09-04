@@ -121,6 +121,11 @@ const STOCK_STEP = 0.125;
 // Model units of drag per step, matching the resize tool's one unit per step.
 const UNITS_PER_STEP = 1;
 
+// Vertex snap: the mode key added to BarItems.vertex_snap_mode, and the floor a
+// stretch is clamped to when the target sits behind the anchored face.
+const VERTEX_SNAP_MODE = 'stretch';
+const MIN_STRETCH = 0.0001;
+
 // Held modifiers cut the step down for fine tuning. Alt is not among them; it
 // switches back to centred stretch.
 const SHIFT_FACTOR = 1 / 2;
@@ -135,6 +140,9 @@ let originals = {};
 let wrappers = {};
 let original_resize;
 let resize_wrapper;
+let original_snap;
+let snap_wrapper;
+let mode_option_added = false;
 
 // uuid -> { from, to, stretch } captured when a stretch drag starts
 let snapshots = new Map();
@@ -302,6 +310,170 @@ function anchorOppositeSide(context) {
 	if (typeof updateNslideValues === 'function') updateNslideValues();
 }
 
+/**
+ * Vertex snap, stretch mode.
+ *
+ * Core's vertex snap has a scale mode, but it is gated behind
+ * `condition: () => !Format.integer_size`, so it is hidden and inert in the
+ * Hytale formats. Scaling would also change the cube's size, which is what the
+ * integer size rule exists to prevent. Stretching reaches the same place while
+ * leaving size — and therefore the UV map — alone.
+ *
+ * Per axis, to move the picked corner by d while the opposite face stays put:
+ *
+ *     stretch += sign * d / (2 * reach)      // reach = half_size + inflate
+ *     from/to += sign * reach * change_in_stretch     // = d/2 when unclamped
+ *
+ * sign is +1 when the picked corner is on the axis's high side. The from/to
+ * shift is written in terms of the stretch actually applied rather than d/2
+ * directly, so the anchor still holds when the stretch is clamped.
+ */
+function applyVertexStretch(element, offset, mesh_space_vertex, ignore) {
+	let changed = false;
+	let clamped = false;
+
+	for (let axis = 0; axis < 3; axis++) {
+		if (ignore && ignore[axis]) continue;
+		let d = offset[axis];
+		if (!d || !isFinite(d)) continue;
+
+		let half_size = element.size(axis) / 2;
+		let reach = half_size + (element.inflate || 0);
+		if (Math.abs(reach) < 1e-9) continue; // flat on this axis, nothing to scale
+
+		let centre = element.from[axis] + half_size;
+		// mesh space is model space minus the origin, so put the vertex back into
+		// model space before deciding which side of the cube it sits on
+		let high = (mesh_space_vertex[axis] + element.origin[axis]) >= centre;
+		let sign = high ? 1 : -1;
+
+		let before = element.stretch[axis];
+		let after = before + sign * d / (2 * reach);
+		if (after < MIN_STRETCH) {
+			after = MIN_STRETCH;
+			clamped = true;
+		}
+		if (after === before) continue;
+
+		let shift = sign * reach * (after - before);
+		element.from[axis] += shift;
+		element.to[axis] += shift;
+		element.stretch[axis] = after;
+		changed = true;
+	}
+
+	return {changed, clamped};
+}
+
+/** Stands in for Vertexsnap.snap while the stretch mode is picked. */
+function vertexStretchSnap(data, options, amended) {
+	let elements = Vertexsnap.elements.slice();
+	if (Vertexsnap.groups && Vertexsnap.groups.length) {
+		for (let group of Vertexsnap.groups) {
+			group.forEachChild(child => elements.safePush(child), OutlinerElement);
+		}
+	}
+	Undo.initEdit({elements, groups: Vertexsnap.groups}, amended);
+
+	let ignore_axis = options && options.ignore_axis;
+	let ignore = [!!(ignore_axis && ignore_axis.x), !!(ignore_axis && ignore_axis.y), !!(ignore_axis && ignore_axis.z)];
+
+	let target = Vertexsnap.getGlobalVertexPos(data.element, data.vertex);
+	let global_delta = new THREE.Vector3().copy(target).sub(Vertexsnap.vertex_pos);
+	let clamped = false;
+
+	for (let element of elements) {
+		if (!canStretch(element) || typeof element.size !== 'function' || !element.mesh) continue;
+
+		let rotation = element.mesh.getWorldQuaternion(new THREE.Quaternion()).invert();
+		let offset = new THREE.Vector3().copy(global_delta).applyQuaternion(rotation).toArray();
+		let vertex = element.mesh.worldToLocal(new THREE.Vector3().copy(Vertexsnap.vertex_pos)).toArray();
+
+		let result = applyVertexStretch(element, offset, vertex, ignore);
+		clamped = clamped || result.clamped;
+	}
+
+	Vertexsnap.clearVertexGizmos();
+	let update_options = {
+		elements,
+		element_aspects: {transform: true, geometry: true},
+		selection: true
+	};
+	if (Vertexsnap.groups && Vertexsnap.groups.length) {
+		update_options.groups = Vertexsnap.groups;
+		update_options.group_aspects = {transform: true};
+	}
+	Canvas.updateView(update_options);
+	Undo.finishEdit('Vertex snap stretch');
+	Vertexsnap.step1 = true;
+
+	if (clamped && typeof Blockbench !== 'undefined' && Blockbench.showQuickMessage) {
+		Blockbench.showQuickMessage('Target sits behind the anchored side', 2500);
+	}
+
+	if (!amended) {
+		Undo.amendEdit({
+			ignore_axis: {
+				type: 'inline_multi_select',
+				label: tl('edit.vertex_snap.ignore_axis', ''),
+				options: {x: 'X', y: 'Y', z: 'Z'},
+				value: {x: false, y: false, z: false}
+			}
+		}, form => {
+			Vertexsnap.snap(data, form, true);
+		});
+	}
+}
+
+function patchVertexSnap() {
+	if (typeof Vertexsnap === 'undefined' || typeof Vertexsnap.snap !== 'function') {
+		console.error('[Anchored Stretch] Could not find Vertexsnap.snap; the vertex snap stretch mode is inactive.');
+		return;
+	}
+
+	original_snap = Vertexsnap.snap;
+	snap_wrapper = function (data, options = 0, amended) {
+		let mode = BarItems.vertex_snap_mode && BarItems.vertex_snap_mode.get();
+		let mine = mode === VERTEX_SNAP_MODE
+			&& Format && Format.stretch_cubes
+			&& !Vertexsnap.move_origin;
+
+		if (!mine) return original_snap.call(this, data, options, amended);
+		return vertexStretchSnap(data, options, amended);
+	};
+	Vertexsnap.snap = snap_wrapper;
+
+	// Add the mode to the existing dropdown. `open()` reads `options` live and
+	// `trigger()` (wheel / keybind cycling) reads `values`, so both need the key.
+	let select = BarItems.vertex_snap_mode;
+	if (select && select.options && !select.options[VERTEX_SNAP_MODE]) {
+		select.options[VERTEX_SNAP_MODE] = {
+			name: 'Stretch',
+			condition: () => Format && Format.stretch_cubes
+		};
+		if (select.values && !select.values.includes(VERTEX_SNAP_MODE)) {
+			select.values.push(VERTEX_SNAP_MODE);
+		}
+		mode_option_added = true;
+	}
+}
+
+function unpatchVertexSnap() {
+	if (original_snap && typeof Vertexsnap !== 'undefined' && Vertexsnap.snap === snap_wrapper) {
+		Vertexsnap.snap = original_snap;
+	}
+	original_snap = null;
+	snap_wrapper = null;
+
+	let select = typeof BarItems !== 'undefined' && BarItems.vertex_snap_mode;
+	if (mode_option_added && select) {
+		if (select.value === VERTEX_SNAP_MODE && select.set) select.set('move');
+		if (select.options) delete select.options[VERTEX_SNAP_MODE];
+		if (select.values) select.values.remove(VERTEX_SNAP_MODE);
+	}
+	mode_option_added = false;
+}
+
 function patchResize() {
 	if (typeof Cube === 'undefined' || typeof Cube.prototype.resize !== 'function') {
 		console.error('[Anchored Stretch] Could not find Cube.prototype.resize; the resize anchor fix is inactive.');
@@ -348,6 +520,7 @@ function patchResize() {
 
 function patch() {
 	patchResize();
+	patchVertexSnap();
 	edit_module = typeof TransformerModule !== 'undefined' && TransformerModule.modules && TransformerModule.modules.edit;
 	if (!edit_module) {
 		console.error('[Anchored Stretch] Could not find the edit transform module. This plugin needs Blockbench 5.0.5 or newer.');
@@ -396,6 +569,7 @@ function patch() {
 
 function unpatch() {
 	snapshots.clear();
+	unpatchVertexSnap();
 
 	// Only restore if nothing else has wrapped us in the meantime.
 	if (original_resize && typeof Cube !== 'undefined' && Cube.prototype.resize === resize_wrapper) {
@@ -425,6 +599,7 @@ Plugin.register(PLUGIN_ID, {
 		'- Since all the growth lands on one face, the applied stretch is halved, so the face you drag tracks at the rate it always did rather than twice as fast.',
 		'- **Stretch per Drag Step** sets a fixed step instead of stock\'s snapped-distance maths, so the value lands on round numbers and the tool no longer gets coarser as you zoom out. It defaults to the format\'s base scale: 0.015625 for Hytale characters, 0.03125 for props. One-sided mode applies half the step, so the cube grows by the same amount either way.',
 		'- Hold **Shift** for half a step, **Ctrl** for a quarter, both for an eighth.',
+		'- The Vertex Snap tool gains a **Stretch** mode: pick a corner, pick a target, and the cube stretches to reach it with the opposite corner anchored. Core\'s scale mode is hidden in the Hytale formats because it would break integer sizes; stretching leaves size and UVs alone.',
 		'- Works on the single-axis stretch handles. The plane and uniform handles stay centred, same as with the Resize tool.',
 		'- Hold **Alt** while dragging for centred stretch.',
 		'',
@@ -435,7 +610,7 @@ Plugin.register(PLUGIN_ID, {
 		'Only active in formats that support cube stretching, such as the Hytale formats.'
 	].join('\n'),
 	icon: 'open_in_full',
-	version: '1.6.0',
+	version: '1.7.0',
 	variant: 'both',
 	min_version: '5.0.5',
 	tags: ['Hytale', 'Transform'],

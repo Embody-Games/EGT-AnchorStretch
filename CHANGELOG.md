@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.7.0 — 2026-09-04
+
+- Vertex Snap gains a **Stretch** mode. Pick a corner, pick a target, and the cube stretches to reach it with the opposite corner anchored — on all three axes as needed. Core's scale mode is hidden in the Hytale formats (`condition: () => !Format.integer_size`) and would change the cube's size; stretching leaves size and UVs alone.
+- Supports the same ignore-axis amend options as the other snap modes. A target behind the anchored face clamps the stretch just above zero instead of inverting the cube.
+
 ## 1.6.0 — 2026-09-04
 
 Renamed from **One-Sided Stretch** to **Anchored Stretch**, since the plugin does three things rather than one. Behaviour is unchanged.
