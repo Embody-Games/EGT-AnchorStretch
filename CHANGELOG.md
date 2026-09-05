@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.7.2 — 2026-09-05
+
+- Updated the icon artwork, now 48x48.
+
 ## 1.7.1 — 2026-09-05
 
 - Added a plugin icon, embedded as a data URL so the plugin stays a single file. `anchored_stretch_icon.png` is kept in the repo as the source.
