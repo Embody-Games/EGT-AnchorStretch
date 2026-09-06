@@ -105,6 +105,9 @@
  */
 
 const PLUGIN_ID = 'anchored_stretch';
+// Single source of truth for the version, bumped by scripts/release.mjs. release.yml
+// refuses a tag that disagrees with it.
+const PLUGIN_VERSION = '1.7.2';
 const SETTING_ID = 'anchored_stretch_tool';
 const RESIZE_SETTING_ID = 'anchored_stretch_resize';
 const STEP_SETTING_ID = 'anchored_stretch_step';
@@ -614,7 +617,7 @@ Plugin.register(PLUGIN_ID, {
 		'Only active in formats that support cube stretching, such as the Hytale formats.'
 	].join('\n'),
 	icon: ICON,
-	version: '1.7.2',
+	version: PLUGIN_VERSION,
 	variant: 'both',
 	min_version: '5.0.5',
 	tags: ['Hytale', 'Transform'],

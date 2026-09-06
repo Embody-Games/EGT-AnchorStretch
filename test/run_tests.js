@@ -366,7 +366,7 @@ if (!Array.prototype.safePush) {
 
 // ---------------------------------------------------------------- load the plugin
 
-const plugin_source = fs.readFileSync(__dirname + '/anchored_stretch.js', 'utf8');
+const plugin_source = fs.readFileSync(__dirname + '/../anchored_stretch.js', 'utf8');
 eval(plugin_source);
 const plugin = registered.anchored_stretch;
 assert.ok(plugin, 'plugin registered');
