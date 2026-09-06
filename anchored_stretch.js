@@ -104,6 +104,7 @@
  * difference is small.
  */
 
+const PLUGIN_VERSION = '1.8.1';
 const PLUGIN_ID = 'anchored_stretch';
 const SETTING_ID = 'anchored_stretch_tool';
 const RESIZE_SETTING_ID = 'anchored_stretch_resize';
@@ -792,7 +793,7 @@ Plugin.register(PLUGIN_ID, {
 		'Only active in formats that support cube stretching, such as the Hytale formats.'
 	].join('\n'),
 	icon: ICON,
-	version: '1.8.1',
+	version: PLUGIN_VERSION,
 	variant: 'both',
 	min_version: '5.0.5',
 	tags: ['Hytale', 'Transform'],

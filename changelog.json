@@ -150,5 +150,38 @@
         ]
       }
     ]
+  },
+  "1.8.0": {
+    "title": "Whole pixels where possible",
+    "author": "Embody Games",
+    "date": "2026-09-05",
+    "categories": [
+      {
+        "title": "Added",
+        "list": [
+          "A second Vertex Snap mode, Resize + Stretch. It closes the gap with whole units of size wherever it can and leaves stretch holding only the fraction that will not fit, so most of the face keeps genuine texture resolution. Stretch the cube already had is absorbed into whole units on the way through.",
+          "A Bake Stretch into Size button beside the stretch sliders. It rolls the stretch on every selected cube into whole units of size without moving the cubes on screen at all."
+        ]
+      }
+    ]
+  },
+  "1.8.1": {
+    "title": "Readable numbers",
+    "author": "Embody Games",
+    "date": "2026-09-06",
+    "categories": [
+      {
+        "title": "Changed",
+        "list": [
+          "Stretch from a vertex snap is rounded to six decimals. A gap that works out to a whole number now leaves the stretch at exactly 1 rather than 0.9999999990686774, and a real fraction reads as 1.025 instead of seventeen digits. The corner you snapped to lands within about a millionth of a unit."
+        ]
+      },
+      {
+        "title": "Fixed",
+        "list": [
+          "Sizes produced by Resize + Stretch and by Bake Stretch into Size are exactly whole numbers. They could previously land a hair off, at 3.9999999999999996 rather than 4."
+        ]
+      }
+    ]
   }
 }

@@ -1,6 +1,6 @@
 {
   "name": "egt-anchorstretch",
-  "version": "1.7.2",
+  "version": "1.8.1",
   "private": true,
   "description": "Anchored Stretch - a Blockbench plugin that stretches cubes from the side you drag, keeping the opposite face anchored",
   "author": "Embody Games",

@@ -338,6 +338,36 @@ BarItems.vertex_snap_mode = {
 
 Blockbench.showQuickMessage = function (text) { Blockbench.last_quick_message = text; };
 
+const Modes = {edit: true};
+Cube.all = [];
+Cube.selected = [];
+
+/** Minimal Action + Toolbar, matching how core's delete() unhooks itself. */
+class Action {
+	constructor(id, data) {
+		this.id = id;
+		Object.assign(this, data);
+		this.toolbars = [];
+		BarItems[id] = this;
+	}
+	delete() {
+		this.toolbars.slice().forEach(bar => bar.remove(this));
+		delete BarItems[this.id];
+	}
+}
+class Toolbar {
+	constructor(id) { this.id = id; this.children = []; }
+	add(item) { this.children.push(item); item.toolbars.push(this); return this; }
+	remove(item) {
+		let i = this.children.indexOf(item);
+		if (i !== -1) this.children.splice(i, 1);
+		let j = item.toolbars.indexOf(this);
+		if (j !== -1) item.toolbars.splice(j, 1);
+		return this;
+	}
+}
+const Toolbars = {element_stretch: new Toolbar('element_stretch')};
+
 const registered = {};
 const Plugin = {
 	register(id, data) {
@@ -349,7 +379,8 @@ const Plugin = {
 Object.assign(globalThis, {
 	settings, Setting, Format, Toolbox, Outliner, Mesh, BarItems, Pressing, Blockbench,
 	trimFloatNumber, updateNslideValues, TransformerModule, Plugin, Cube,
-	THREE, Vertexsnap, Undo, Canvas, OutlinerElement, tl
+	THREE, Vertexsnap, Undo, Canvas, OutlinerElement, tl,
+	Action, Toolbar, Toolbars, Modes
 });
 
 // Array.remove, used by the plugin when it takes its mode back out of the dropdown
@@ -473,6 +504,16 @@ function test(name, fn) {
 const close = (a, b) => Math.abs(a - b) < 1e-9;
 function assertFace(actual, expected, label) {
 	assert.ok(close(actual, expected), `${label}: expected ${expected}, got ${actual}`);
+}
+// Whole-size paths: the anchored face is solved for exactly (on a 2^-30 grid),
+// while the reached corner absorbs the 6-decimal stretch rounding.
+const GRID_TOLERANCE = 1e-8;
+const TARGET_TOLERANCE = 2e-5;
+function assertFaceOnGrid(actual, expected, label) {
+	assert.ok(Math.abs(actual - expected) < GRID_TOLERANCE, `${label}: expected ${expected}, got ${actual}`);
+}
+function assertTarget(actual, expected, label) {
+	assert.ok(Math.abs(actual - expected) < TARGET_TOLERANCE, `${label}: expected ${expected}, got ${actual}`);
 }
 
 console.log('\nAnchored Stretch — stretch tool\n');
@@ -1274,6 +1315,16 @@ test('a rotated cube snaps along its own axes', () => {
 	assert.ok(close(cube.stretch[2], 1.25), 'Z took the stretch, got ' + cube.stretch[2]);
 });
 
+test('plain stretch mode rounds its numbers too', () => {
+	let cube = attachMesh(new Cube({from: [0, 0, 0], to: [8, 8, 8]}));
+	// a third of a unit would otherwise leave stretch at 1.0416666666666667
+	vertexSnap([cube], [8, 8, 8], [8 + 1 / 3, 8, 8]);
+	assert.strictEqual(cube.stretch[0], 1.041667, 'trimmed to six decimals, got ' + cube.stretch[0]);
+	// the anchored face is still solved from the stretch actually applied
+	assertFace(renderedBounds(cube).from[0], 0, 'low face still exact');
+	assertTarget(renderedBounds(cube).to[0], 8 + 1 / 3, 'corner within a millionth');
+});
+
 test('non-cube elements in the selection are skipped', () => {
 	let cube = attachMesh(new Cube({from: [0, 0, 0], to: [8, 8, 8]}));
 	let locator = {uuid: 'loc', mesh: cube.mesh, position: [0, 0, 0]};
@@ -1324,6 +1375,239 @@ test('stretch mode is left to core outside stretch formats, and for origin snaps
 	assert.deepStrictEqual(cube2.stretch, [1, 1, 1], 'and left the cube alone');
 });
 
+console.log('\nAnchored Stretch — resize + stretch snap\n');
+
+test('the Resize + Stretch mode is in the dropdown', () => {
+	let select = BarItems.vertex_snap_mode;
+	assert.ok(select.options.resize_stretch, 'option present');
+	assert.strictEqual(select.options.resize_stretch.name, 'Resize + Stretch', 'labelled');
+	assert.ok(select.values.includes('resize_stretch'), 'in values');
+	Format.stretch_cubes = false;
+	assert.strictEqual(select.options.resize_stretch.condition(), false, 'hidden outside stretch formats');
+	Format.stretch_cubes = true;
+});
+
+test('the gap goes into whole size first, stretch takes the remainder', () => {
+	let cube = attachMesh(new Cube({from: [0, 0, 0], to: [8, 8, 8]}));
+	vertexSnap([cube], [8, 8, 8], [10.7, 8, 8], {mode: 'resize_stretch'});
+
+	assert.strictEqual(cube.size(0), 11, 'size rounded to a whole 11, got ' + cube.size(0));
+	assert.ok(cube.stretch[0] === 0.972727, 'stretch covers the rest, got ' + cube.stretch[0]);
+	let after = renderedBounds(cube);
+	assertFaceOnGrid(after.from[0], 0, 'anchored face held');
+	assertTarget(after.to[0], 10.7, 'corner landed exactly on the target');
+});
+
+test('rounding to nearest can squash as well as stretch', () => {
+	let up = attachMesh(new Cube({from: [0, 0, 0], to: [8, 8, 8]}));
+	vertexSnap([up], [8, 8, 8], [10.3, 8, 8], {mode: 'resize_stretch'});
+	assert.strictEqual(up.size(0), 10, 'rounded down to 10');
+	assert.ok(up.stretch[0] > 1, 'stretched slightly, got ' + up.stretch[0]);
+
+	let down = attachMesh(new Cube({from: [0, 0, 0], to: [8, 8, 8]}));
+	vertexSnap([down], [8, 8, 8], [10.7, 8, 8], {mode: 'resize_stretch'});
+	assert.strictEqual(down.size(0), 11, 'rounded up to 11');
+	assert.ok(down.stretch[0] < 1, 'squashed slightly, got ' + down.stretch[0]);
+
+	assert.ok(Math.abs(up.stretch[0] - 1) < 0.5 && Math.abs(down.stretch[0] - 1) < 0.5, 'both within half a unit of 1');
+});
+
+test('an existing stretch gets absorbed into whole units', () => {
+	// size 8 at stretch 1.5 renders as -2..10, an extent of 12
+	let cube = attachMesh(new Cube({from: [0, 0, 0], to: [8, 8, 8], stretch: [1.5, 1, 1]}));
+	let before = renderedBounds(cube);
+	assertFaceOnGrid(before.from[0], -2, 'starts at -2');
+	assertFaceOnGrid(before.to[0], 10, 'starts at 10');
+	vertexSnap([cube], [10, 8, 8], [10.3, 8, 8], {mode: 'resize_stretch'});
+
+	assert.strictEqual(cube.size(0), 12, 'the old stretch became whole size, got ' + cube.size(0));
+	assert.ok(close(cube.stretch[0], 12.3 / 12), 'only the leftover is stretch, got ' + cube.stretch[0]);
+	let after = renderedBounds(cube);
+	assertFaceOnGrid(after.from[0], -2, 'anchored face held');
+	assertTarget(after.to[0], 10.3, 'corner landed on the target');
+});
+
+test('inflate is taken out before rounding', () => {
+	let cube = attachMesh(new Cube({from: [0, 0, 0], to: [8, 8, 8], inflate: 1}));
+	let before = renderedBounds(cube);
+	assertFaceOnGrid(before.to[0], 9, 'inflated extent starts at 10');
+	vertexSnap([cube], [9, 9, 9], [11.7, 9, 9], {mode: 'resize_stretch'});
+
+	// extent 12.7, minus 2 * inflate = 10.7, rounds to a size of 11
+	assert.strictEqual(cube.size(0), 11, 'size 11, got ' + cube.size(0));
+	assert.ok(cube.stretch[0] === 0.976923, 'stretch over the inflated reach, got ' + cube.stretch[0]);
+	assertFaceOnGrid(renderedBounds(cube).from[0], -1, 'inflated anchored face held');
+});
+
+test('the low corner anchors the high face', () => {
+	let cube = attachMesh(new Cube({from: [0, 0, 0], to: [8, 8, 8]}));
+	vertexSnap([cube], [0, 0, 0], [-2.7, 0, 0], {mode: 'resize_stretch'});
+
+	assert.strictEqual(cube.size(0), 11, 'size 11');
+	let after = renderedBounds(cube);
+	assertFaceOnGrid(after.to[0], 8, 'high face held');
+	assertTarget(after.from[0], -2.7, 'low corner reached the target');
+});
+
+test('sizes always come out whole, across a range of targets', () => {
+	for (let target of [9.1, 9.49, 9.5, 12.34, 20.8, 4.2]) {
+		let cube = attachMesh(new Cube({from: [0, 0, 0], to: [8, 8, 8]}));
+		vertexSnap([cube], [8, 8, 8], [target, 8, 8], {mode: 'resize_stretch'});
+		assert.ok(Number.isInteger(cube.size(0)), `target ${target}: size ${cube.size(0)} is whole`);
+		assertTarget(renderedBounds(cube).to[0], target, `target ${target}: reached`);
+		assertTarget(renderedBounds(cube).from[0], 0, `target ${target}: anchored`);
+	}
+});
+
+test('sizes stay whole at awkward coordinates', () => {
+	for (let origin of [-137.5, 0.1, 512.3, -0.0001]) {
+		for (let target of [3.7, 11.26, 9.5]) {
+			let cube = attachMesh(new Cube({from: [origin, 0, 0], to: [origin + 8, 8, 8]}));
+			vertexSnap([cube], [origin + 8, 8, 8], [origin + target, 8, 8], {mode: 'resize_stretch'});
+			let size = cube.size(0);
+			assert.ok(Number.isInteger(size), `from ${origin} target ${target}: size ${size} is whole`);
+		}
+	}
+});
+
+test('a whole-number gap leaves no stretch at all', () => {
+	let cube = attachMesh(new Cube({from: [0, 0, 0], to: [8, 8, 8]}));
+	vertexSnap([cube], [8, 8, 8], [11, 8, 8], {mode: 'resize_stretch'});
+	assert.strictEqual(cube.size(0), 11, 'size 11');
+	assert.strictEqual(cube.stretch[0], 1, 'stretch is exactly 1, got ' + cube.stretch[0]);
+});
+
+test('float noise near a whole number still comes out as exactly 1', () => {
+	for (let target of [10.999999999, 11.000000001, 11 - 1e-9]) {
+		let cube = attachMesh(new Cube({from: [0, 0, 0], to: [8, 8, 8]}));
+		vertexSnap([cube], [8, 8, 8], [target, 8, 8], {mode: 'resize_stretch'});
+		assert.strictEqual(cube.stretch[0], 1, `target ${target}: stretch is exactly 1, got ${cube.stretch[0]}`);
+	}
+});
+
+test('stretch never comes out with a tail of digits', () => {
+	for (let target of [10.7, 4.2, 12.34, 9.1, 20.8]) {
+		let cube = attachMesh(new Cube({from: [0, 0, 0], to: [8, 8, 8]}));
+		vertexSnap([cube], [8, 8, 8], [target, 8, 8], {mode: 'resize_stretch'});
+		let text = JSON.stringify(cube.stretch[0]);
+		let decimals = (text.split('.')[1] || '').length;
+		assert.ok(decimals <= 6, `target ${target}: ${text} has ${decimals} decimals`);
+	}
+});
+
+test('baked stretch is clean too', () => {
+	let cube = new Cube({from: [0, 0, 0], to: [8, 8, 8], stretch: [1.5, 1, 1]});
+	Cube.all = [cube];
+	cube.selected = true;
+	BarItems.anchored_stretch_bake.click();
+	assert.strictEqual(cube.stretch[0], 1, 'an exact 12 leaves no stretch, got ' + cube.stretch[0]);
+});
+
+test('box_uv cubes get their UV refreshed', () => {
+	let cube = attachMesh(new Cube({from: [0, 0, 0], to: [8, 8, 8]}));
+	cube.box_uv = true;
+	let uv_updates = 0;
+	cube.preview_controller.updateUV = () => uv_updates++;
+	vertexSnap([cube], [8, 8, 8], [10.7, 8, 8], {mode: 'resize_stretch'});
+	assert.ok(uv_updates > 0, 'updateUV called');
+});
+
+test('plain stretch mode still leaves size alone', () => {
+	let cube = attachMesh(new Cube({from: [0, 0, 0], to: [8, 8, 8]}));
+	vertexSnap([cube], [8, 8, 8], [10.7, 8, 8], {mode: 'stretch'});
+	assert.strictEqual(cube.size(0), 8, 'size untouched in plain stretch mode');
+});
+
+console.log('\nAnchored Stretch — bake stretch into size\n');
+
+function bake(cubes) {
+	Cube.all = cubes;
+	cubes.forEach(cube => { cube.selected = true; });
+	undo_log.length = 0;
+	Blockbench.last_quick_message = null;
+	BarItems.anchored_stretch_bake.click();
+}
+
+test('the bake button is registered next to the stretch sliders', () => {
+	let action = BarItems.anchored_stretch_bake;
+	assert.ok(action, 'action registered');
+	assert.strictEqual(action.name, 'Bake Stretch into Size', 'named');
+	assert.ok(Toolbars.element_stretch.children.includes(action), 'added to the stretch toolbar');
+
+	Cube.selected = [1];
+	assert.ok(action.condition(), 'enabled with cubes selected');
+	Cube.selected = [];
+	assert.ok(!action.condition(), 'disabled with nothing selected');
+	Cube.selected = [1];
+});
+
+test('baking turns stretch into whole size without moving the cube', () => {
+	let cube = new Cube({from: [0, 0, 0], to: [8, 8, 8], stretch: [1.5, 1, 1]});
+	let before = renderedBounds(cube);
+	bake([cube]);
+
+	assert.strictEqual(cube.size(0), 12, 'size became 12, got ' + cube.size(0));
+	assert.ok(close(cube.stretch[0], 1), 'stretch back to 1, got ' + cube.stretch[0]);
+	let after = renderedBounds(cube);
+	assertFace(after.from[0], before.from[0], 'low face did not move');
+	assertFace(after.to[0], before.to[0], 'high face did not move');
+});
+
+test('a fractional extent keeps the leftover in stretch', () => {
+	let cube = new Cube({from: [0, 0, 0], to: [8, 8, 8], stretch: [1.3, 1, 1]});
+	let before = renderedBounds(cube);
+	bake([cube]);
+
+	assert.strictEqual(cube.size(0), 10, 'size 10, got ' + cube.size(0));
+	assert.ok(close(cube.stretch[0], 10.4 / 10), 'stretch 1.04, got ' + cube.stretch[0]);
+	let after = renderedBounds(cube);
+	assertFace(after.from[0], before.from[0], 'low face did not move');
+	assertFace(after.to[0], before.to[0], 'high face did not move');
+});
+
+test('baking handles all three axes and inflate', () => {
+	let cube = new Cube({from: [0, 0, 0], to: [8, 6, 4], stretch: [1.5, 1.25, 0.5], inflate: 1});
+	let before = renderedBounds(cube);
+	bake([cube]);
+
+	for (let axis = 0; axis < 3; axis++) {
+		assert.ok(Number.isInteger(cube.size(axis)), `axis ${axis}: whole size ${cube.size(axis)}`);
+		assert.ok(Math.abs(cube.stretch[axis] - 1) < 0.5, `axis ${axis}: stretch near 1, got ${cube.stretch[axis]}`);
+		assertFace(renderedBounds(cube).from[axis], before.from[axis], `axis ${axis}: low face`);
+		assertFace(renderedBounds(cube).to[axis], before.to[axis], `axis ${axis}: high face`);
+	}
+});
+
+test('baking only touches selected cubes', () => {
+	let picked = new Cube({from: [0, 0, 0], to: [8, 8, 8], stretch: [1.5, 1, 1]});
+	let other = new Cube({from: [0, 0, 0], to: [8, 8, 8], stretch: [1.5, 1, 1]});
+	Cube.all = [picked, other];
+	picked.selected = true;
+	other.selected = false;
+	undo_log.length = 0;
+	BarItems.anchored_stretch_bake.click();
+
+	assert.strictEqual(picked.size(0), 12, 'the selected cube was baked');
+	assert.strictEqual(other.size(0), 8, 'the other cube was left alone');
+});
+
+test('baking a clean cube does nothing and says so', () => {
+	let cube = new Cube({from: [0, 0, 0], to: [8, 8, 8]});
+	bake([cube]);
+
+	assert.deepStrictEqual(cube.to, [8, 8, 8], 'untouched');
+	assert.strictEqual(undo_log.length, 0, 'no undo entry for a no-op');
+	assert.ok(Blockbench.last_quick_message, 'told the user there was nothing to do');
+});
+
+test('baking is wrapped in a named undo entry', () => {
+	let cube = new Cube({from: [0, 0, 0], to: [8, 8, 8], stretch: [1.5, 1, 1]});
+	bake([cube]);
+
+	assert.strictEqual(undo_log[0].call, 'initEdit', 'opened an edit');
+	assert.ok(undo_log.find(e => e.call === 'finishEdit' && e.name === 'Bake stretch into size'), 'named the edit');
+});
+
 console.log('\nAnchored Stretch — teardown\n');
 
 test('unload restores all patches', () => {
@@ -1337,6 +1621,9 @@ test('unload restores all patches', () => {
 	assert.ok(Vertexsnap.snap !== wrapped_snap, 'Vertexsnap.snap restored');
 	assert.ok(!BarItems.vertex_snap_mode.options.stretch, 'mode removed from the dropdown');
 	assert.ok(!BarItems.vertex_snap_mode.values.includes('stretch'), 'and from values');
+	assert.ok(!BarItems.vertex_snap_mode.options.resize_stretch, 'resize+stretch mode removed too');
+	assert.ok(!BarItems.anchored_stretch_bake, 'bake action removed from BarItems');
+	assert.strictEqual(Toolbars.element_stretch.children.length, 0, 'and out of the stretch toolbar');
 	assert.strictEqual(BarItems.vertex_snap_mode.get(), 'move', 'active mode reset off the removed option');
 	assert.ok(module.onMove !== wrapped_on_move, 'onMove restored');
 	assert.ok(module.calculateOffset !== wrapped_calculate, 'calculateOffset restored');
