@@ -505,10 +505,15 @@ const close = (a, b) => Math.abs(a - b) < 1e-9;
 function assertFace(actual, expected, label) {
 	assert.ok(close(actual, expected), `${label}: expected ${expected}, got ${actual}`);
 }
-// The whole-size modes snap positions to 1/65536 so sizes stay exactly whole
-const GRID_TOLERANCE = 2e-5;
+// Whole-size paths: the anchored face is solved for exactly (on a 2^-30 grid),
+// while the reached corner absorbs the 6-decimal stretch rounding.
+const GRID_TOLERANCE = 1e-8;
+const TARGET_TOLERANCE = 2e-5;
 function assertFaceOnGrid(actual, expected, label) {
 	assert.ok(Math.abs(actual - expected) < GRID_TOLERANCE, `${label}: expected ${expected}, got ${actual}`);
+}
+function assertTarget(actual, expected, label) {
+	assert.ok(Math.abs(actual - expected) < TARGET_TOLERANCE, `${label}: expected ${expected}, got ${actual}`);
 }
 
 console.log('\nAnchored Stretch — stretch tool\n');
@@ -1310,6 +1315,16 @@ test('a rotated cube snaps along its own axes', () => {
 	assert.ok(close(cube.stretch[2], 1.25), 'Z took the stretch, got ' + cube.stretch[2]);
 });
 
+test('plain stretch mode rounds its numbers too', () => {
+	let cube = attachMesh(new Cube({from: [0, 0, 0], to: [8, 8, 8]}));
+	// a third of a unit would otherwise leave stretch at 1.0416666666666667
+	vertexSnap([cube], [8, 8, 8], [8 + 1 / 3, 8, 8]);
+	assert.strictEqual(cube.stretch[0], 1.041667, 'trimmed to six decimals, got ' + cube.stretch[0]);
+	// the anchored face is still solved from the stretch actually applied
+	assertFace(renderedBounds(cube).from[0], 0, 'low face still exact');
+	assertTarget(renderedBounds(cube).to[0], 8 + 1 / 3, 'corner within a millionth');
+});
+
 test('non-cube elements in the selection are skipped', () => {
 	let cube = attachMesh(new Cube({from: [0, 0, 0], to: [8, 8, 8]}));
 	let locator = {uuid: 'loc', mesh: cube.mesh, position: [0, 0, 0]};
@@ -1377,10 +1392,10 @@ test('the gap goes into whole size first, stretch takes the remainder', () => {
 	vertexSnap([cube], [8, 8, 8], [10.7, 8, 8], {mode: 'resize_stretch'});
 
 	assert.strictEqual(cube.size(0), 11, 'size rounded to a whole 11, got ' + cube.size(0));
-	assert.ok(close(cube.stretch[0], 10.7 / 11), 'stretch covers the rest, got ' + cube.stretch[0]);
+	assert.ok(cube.stretch[0] === 0.972727, 'stretch covers the rest, got ' + cube.stretch[0]);
 	let after = renderedBounds(cube);
 	assertFaceOnGrid(after.from[0], 0, 'anchored face held');
-	assertFaceOnGrid(after.to[0], 10.7, 'corner landed exactly on the target');
+	assertTarget(after.to[0], 10.7, 'corner landed exactly on the target');
 });
 
 test('rounding to nearest can squash as well as stretch', () => {
@@ -1409,7 +1424,7 @@ test('an existing stretch gets absorbed into whole units', () => {
 	assert.ok(close(cube.stretch[0], 12.3 / 12), 'only the leftover is stretch, got ' + cube.stretch[0]);
 	let after = renderedBounds(cube);
 	assertFaceOnGrid(after.from[0], -2, 'anchored face held');
-	assertFaceOnGrid(after.to[0], 10.3, 'corner landed on the target');
+	assertTarget(after.to[0], 10.3, 'corner landed on the target');
 });
 
 test('inflate is taken out before rounding', () => {
@@ -1420,7 +1435,7 @@ test('inflate is taken out before rounding', () => {
 
 	// extent 12.7, minus 2 * inflate = 10.7, rounds to a size of 11
 	assert.strictEqual(cube.size(0), 11, 'size 11, got ' + cube.size(0));
-	assert.ok(close(cube.stretch[0], 12.7 / 13), 'stretch over the inflated reach, got ' + cube.stretch[0]);
+	assert.ok(cube.stretch[0] === 0.976923, 'stretch over the inflated reach, got ' + cube.stretch[0]);
 	assertFaceOnGrid(renderedBounds(cube).from[0], -1, 'inflated anchored face held');
 });
 
@@ -1431,7 +1446,7 @@ test('the low corner anchors the high face', () => {
 	assert.strictEqual(cube.size(0), 11, 'size 11');
 	let after = renderedBounds(cube);
 	assertFaceOnGrid(after.to[0], 8, 'high face held');
-	assertFaceOnGrid(after.from[0], -2.7, 'low corner reached the target');
+	assertTarget(after.from[0], -2.7, 'low corner reached the target');
 });
 
 test('sizes always come out whole, across a range of targets', () => {
@@ -1439,9 +1454,53 @@ test('sizes always come out whole, across a range of targets', () => {
 		let cube = attachMesh(new Cube({from: [0, 0, 0], to: [8, 8, 8]}));
 		vertexSnap([cube], [8, 8, 8], [target, 8, 8], {mode: 'resize_stretch'});
 		assert.ok(Number.isInteger(cube.size(0)), `target ${target}: size ${cube.size(0)} is whole`);
-		assertFaceOnGrid(renderedBounds(cube).to[0], target, `target ${target}: reached`);
-		assertFaceOnGrid(renderedBounds(cube).from[0], 0, `target ${target}: anchored`);
+		assertTarget(renderedBounds(cube).to[0], target, `target ${target}: reached`);
+		assertTarget(renderedBounds(cube).from[0], 0, `target ${target}: anchored`);
 	}
+});
+
+test('sizes stay whole at awkward coordinates', () => {
+	for (let origin of [-137.5, 0.1, 512.3, -0.0001]) {
+		for (let target of [3.7, 11.26, 9.5]) {
+			let cube = attachMesh(new Cube({from: [origin, 0, 0], to: [origin + 8, 8, 8]}));
+			vertexSnap([cube], [origin + 8, 8, 8], [origin + target, 8, 8], {mode: 'resize_stretch'});
+			let size = cube.size(0);
+			assert.ok(Number.isInteger(size), `from ${origin} target ${target}: size ${size} is whole`);
+		}
+	}
+});
+
+test('a whole-number gap leaves no stretch at all', () => {
+	let cube = attachMesh(new Cube({from: [0, 0, 0], to: [8, 8, 8]}));
+	vertexSnap([cube], [8, 8, 8], [11, 8, 8], {mode: 'resize_stretch'});
+	assert.strictEqual(cube.size(0), 11, 'size 11');
+	assert.strictEqual(cube.stretch[0], 1, 'stretch is exactly 1, got ' + cube.stretch[0]);
+});
+
+test('float noise near a whole number still comes out as exactly 1', () => {
+	for (let target of [10.999999999, 11.000000001, 11 - 1e-9]) {
+		let cube = attachMesh(new Cube({from: [0, 0, 0], to: [8, 8, 8]}));
+		vertexSnap([cube], [8, 8, 8], [target, 8, 8], {mode: 'resize_stretch'});
+		assert.strictEqual(cube.stretch[0], 1, `target ${target}: stretch is exactly 1, got ${cube.stretch[0]}`);
+	}
+});
+
+test('stretch never comes out with a tail of digits', () => {
+	for (let target of [10.7, 4.2, 12.34, 9.1, 20.8]) {
+		let cube = attachMesh(new Cube({from: [0, 0, 0], to: [8, 8, 8]}));
+		vertexSnap([cube], [8, 8, 8], [target, 8, 8], {mode: 'resize_stretch'});
+		let text = JSON.stringify(cube.stretch[0]);
+		let decimals = (text.split('.')[1] || '').length;
+		assert.ok(decimals <= 6, `target ${target}: ${text} has ${decimals} decimals`);
+	}
+});
+
+test('baked stretch is clean too', () => {
+	let cube = new Cube({from: [0, 0, 0], to: [8, 8, 8], stretch: [1.5, 1, 1]});
+	Cube.all = [cube];
+	cube.selected = true;
+	BarItems.anchored_stretch_bake.click();
+	assert.strictEqual(cube.stretch[0], 1, 'an exact 12 leaves no stretch, got ' + cube.stretch[0]);
 });
 
 test('box_uv cubes get their UV refreshed', () => {

@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.8.1 — 2026-09-05
+
+- Stretch from every vertex snap path is rounded to six decimals. A gap that works out to a whole number now leaves the stretch at exactly 1 instead of 0.9999999990686774, and an honest fraction reads as 1.025 rather than seventeen digits. Costs a millionth of a unit or so on the reached corner; the anchored face and the whole size are unaffected. Core does no rounding of its own here: its own integer-size resize can leave a size at 6.999999999999999, and its vertex snap modes write raw floats.
+- Tightened the whole-size position grid from 1/65536 to 2^-30, about a billionth of a unit. Sizes are still exactly whole, and the grid stays exact for any coordinate within +-8 million units.
+
 ## 1.8.0 — 2026-09-05
 
 - Vertex Snap gains a second mode, **Resize + Stretch**. It closes the gap by putting as much of it as possible into whole units of size, leaving stretch to cover only the fraction that will not fit, so most of the face keeps genuine texture resolution. Stretch a cube already has is absorbed into whole units on the way through. Rounds to the nearest whole size, so it can squash very slightly as well as stretch.

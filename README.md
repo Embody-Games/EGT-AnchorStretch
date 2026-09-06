@@ -25,6 +25,8 @@ Requires Blockbench 5.0.5 or newer.
 
 Core has a vertex snap *scale* mode, but it is gated behind `condition: () => !Format.integer_size`, so it is hidden and inert in the Hytale formats — and scaling would change the cube's size, which is what the integer size rule exists to prevent. Stretching reaches the same place while leaving size and UVs alone.
 
+Stretch from any snap mode is rounded to six decimals, so the numbers stay readable and a gap that works out whole leaves the stretch at exactly 1. Stock Blockbench does no rounding here at all: its own integer-size resize can leave a size sitting at 6.999999999999999, and its vertex snap modes write whatever float the geometry produced.
+
 Pick the mode from the dropdown in the Vertex Snap toolbar. It stretches on all three axes as needed, each anchored at its opposite face, and the undo bar offers the same ignore-axis options as the other modes. If the target sits behind the anchored face the stretch clamps just above zero rather than turning the cube inside out.
 
 **Resize + Stretch keeps your texels square.** The second snap mode closes the same gap, but puts as much of it as possible into whole units of size and leaves stretch holding only the fraction that will not fit:
@@ -35,7 +37,7 @@ S' = round(E - 2 * inflate)                   new whole size
 s' = E / (S' + 2 * inflate)                   stretch takes the remainder
 ```
 
-Stretch always lands within half a unit of 1, so most of the face stays at genuine texture resolution. Any stretch the cube already had gets absorbed on the way through: a cube at size 8 stretch 1.5 nudged by 0.3 comes out at size 12 stretch 1.025, not size 8 stretch 1.5375. Rounding goes to the nearest whole number, so it can squash very slightly as well as stretch.
+Stretch is rounded to six decimals, so a gap that comes out whole leaves the stretch at exactly 1 rather than 0.999999999, and a real fraction reads as 1.025. It always lands within half a unit of 1, so most of the face stays at genuine texture resolution. Any stretch the cube already had gets absorbed on the way through: a cube at size 8 stretch 1.5 nudged by 0.3 comes out at size 12 stretch 1.025, not size 8 stretch 1.5375. Rounding goes to the nearest whole number, so it can squash very slightly as well as stretch.
 
 **Bake Stretch into Size** does the same sum with no gap to close, on every selected cube. Because `s' = E / (S' + 2 * inflate)` preserves the extent exactly, the cubes do not move at all — only the split between size and stretch changes. The button sits next to the stretch sliders in the element panel. Use it to clean up after a session of free stretching.
 
@@ -94,4 +96,4 @@ Implementation is a wrapper around `TransformerModule.modules.edit` for the stre
 node test_anchored_stretch.js
 ```
 
-No dependencies. The harness mocks the parts of Blockbench the plugin touches, including copies of core's stretch and resize drag logic, the cube render formula, and enough of THREE for the vertex snap path, then simulates gizmo drags and snaps and checks which rendered faces moved and by how much. 84 cases covering both handle directions, inflate, off-centre, rotated and already-stretched cubes, multi-selection, the modifier factors, snapping independence, drift over long drags, whole-size fitting across a range of targets, undo/cancel, and clean unload.
+No dependencies. The harness mocks the parts of Blockbench the plugin touches, including copies of core's stretch and resize drag logic, the cube render formula, and enough of THREE for the vertex snap path, then simulates gizmo drags and snaps and checks which rendered faces moved and by how much. 90 cases covering both handle directions, inflate, off-centre, rotated and already-stretched cubes, multi-selection, the modifier factors, snapping independence, drift over long drags, whole-size fitting across a range of targets, undo/cancel, and clean unload.

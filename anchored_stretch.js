@@ -127,8 +127,13 @@ const VERTEX_SNAP_MODE = 'stretch';
 const VERTEX_SNAP_WHOLE_MODE = 'resize_stretch';
 const BAKE_ACTION_ID = 'anchored_stretch_bake';
 const MIN_STRETCH = 0.0001;
+// Stretch is rounded to this many decimals in every vertex snap path. Float noise
+// otherwise turns a gap that was a whole number into 0.9999999990686774 rather
+// than a clean 1, and an honest ratio into 17 digits. Six decimals moves the
+// rendered face by under a millionth of a unit.
+const STRETCH_DECIMALS = 1e6;
 // Binary grid the whole-size modes snap positions to, so to - from stays exact.
-const POSITION_GRID = 65536; // 1/65536 of a unit
+const POSITION_GRID = 1073741824; // 2^30, about a billionth of a unit
 
 // Held modifiers cut the step down for fine tuning. Alt is not among them; it
 // switches back to centred stretch.
@@ -174,6 +179,11 @@ function stretchStep() {
 	if (isFinite(value) && value > 0) return value;
 	let format_id = Format && Format.id;
 	return AUTO_STEPS[format_id] || FALLBACK_STEP;
+}
+
+/** Keeps stretch readable: kills float noise near 1, and trims honest ratios. */
+function roundStretch(value) {
+	return Math.round(value * STRETCH_DECIMALS) / STRETCH_DECIMALS;
 }
 
 /** Shift halves the step, Ctrl quarters it, both together take an eighth. */
@@ -371,7 +381,7 @@ function applyVertexStretch(element, offset, mesh_space_vertex, ignore, whole) {
 		}
 
 		let before = element.stretch[axis];
-		let after = before + sign * d / (2 * reach);
+		let after = roundStretch(before + sign * d / (2 * reach));
 		if (after < MIN_STRETCH) {
 			after = MIN_STRETCH;
 			clamped = true;
@@ -417,7 +427,7 @@ function fitWholeSize(element, axis, extent) {
 		reach = 1 + 2 * inflate;
 	}
 
-	let stretch = extent / reach;
+	let stretch = roundStretch(extent / reach);
 	if (stretch < MIN_STRETCH) {
 		stretch = MIN_STRETCH;
 		clamped = true;
@@ -442,8 +452,10 @@ function setWholeSize(element, axis, fit, anchored_pos, anchor_low) {
 	// `to - from` is only exactly `size` when from sits on a binary grid: for an
 	// arbitrary from, from + size subtracts back to a few ulps off a whole number,
 	// which is the one thing this mode exists to avoid, and enough to fail a
-	// whole-size check. Snapping from to 1/65536 makes both values exact, at the
-	// cost of up to 0.0000076 units of position, which is a millionth of a texel.
+	// whole-size check. Snapping from to a power-of-two grid makes from, from+size
+	// and their difference all exactly representable. 2^-30 is as fine as this can
+	// go while staying exact for any coordinate a model will ever use (it holds up
+	// to +-2^23 units), so the position error is under a billionth of a unit.
 	from = Math.round(from * POSITION_GRID) / POSITION_GRID;
 
 	element.from[axis] = from;
@@ -780,7 +792,7 @@ Plugin.register(PLUGIN_ID, {
 		'Only active in formats that support cube stretching, such as the Hytale formats.'
 	].join('\n'),
 	icon: ICON,
-	version: '1.8.0',
+	version: '1.8.1',
 	variant: 'both',
 	min_version: '5.0.5',
 	tags: ['Hytale', 'Transform'],
