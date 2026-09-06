@@ -105,9 +105,6 @@
  */
 
 const PLUGIN_ID = 'anchored_stretch';
-// Single source of truth for the version, bumped by scripts/release.mjs. release.yml
-// refuses a tag that disagrees with it.
-const PLUGIN_VERSION = '1.7.2';
 const SETTING_ID = 'anchored_stretch_tool';
 const RESIZE_SETTING_ID = 'anchored_stretch_resize';
 const STEP_SETTING_ID = 'anchored_stretch_step';
@@ -124,10 +121,14 @@ const STOCK_STEP = 0.125;
 // Model units of drag per step, matching the resize tool's one unit per step.
 const UNITS_PER_STEP = 1;
 
-// Vertex snap: the mode key added to BarItems.vertex_snap_mode, and the floor a
+// Vertex snap: the mode keys added to BarItems.vertex_snap_mode, and the floor a
 // stretch is clamped to when the target sits behind the anchored face.
 const VERTEX_SNAP_MODE = 'stretch';
+const VERTEX_SNAP_WHOLE_MODE = 'resize_stretch';
+const BAKE_ACTION_ID = 'anchored_stretch_bake';
 const MIN_STRETCH = 0.0001;
+// Binary grid the whole-size modes snap positions to, so to - from stays exact.
+const POSITION_GRID = 65536; // 1/65536 of a unit
 
 // Held modifiers cut the step down for fine tuning. Alt is not among them; it
 // switches back to centred stretch.
@@ -150,6 +151,7 @@ let resize_wrapper;
 let original_snap;
 let snap_wrapper;
 let mode_option_added = false;
+let bake_action;
 
 // uuid -> { from, to, stretch } captured when a stretch drag starts
 let snapshots = new Map();
@@ -335,7 +337,7 @@ function anchorOppositeSide(context) {
  * shift is written in terms of the stretch actually applied rather than d/2
  * directly, so the anchor still holds when the stretch is clamped.
  */
-function applyVertexStretch(element, offset, mesh_space_vertex, ignore) {
+function applyVertexStretch(element, offset, mesh_space_vertex, ignore, whole) {
 	let changed = false;
 	let clamped = false;
 
@@ -345,7 +347,8 @@ function applyVertexStretch(element, offset, mesh_space_vertex, ignore) {
 		if (!d || !isFinite(d)) continue;
 
 		let half_size = element.size(axis) / 2;
-		let reach = half_size + (element.inflate || 0);
+		let inflate = element.inflate || 0;
+		let reach = half_size + inflate;
 		if (Math.abs(reach) < 1e-9) continue; // flat on this axis, nothing to scale
 
 		let centre = element.from[axis] + half_size;
@@ -353,6 +356,19 @@ function applyVertexStretch(element, offset, mesh_space_vertex, ignore) {
 		// model space before deciding which side of the cube it sits on
 		let high = (mesh_space_vertex[axis] + element.origin[axis]) >= centre;
 		let sign = high ? 1 : -1;
+
+		if (whole) {
+			// Put as much of the gap as possible into whole units of size, and let
+			// stretch cover only what is left over.
+			let anchored = renderedFace(element, axis, !high);
+			let fit = fitWholeSize(element, axis, 2 * reach * element.stretch[axis] + sign * d);
+			if (!fit) continue;
+
+			setWholeSize(element, axis, fit, anchored, high);
+			clamped = clamped || fit.clamped;
+			changed = true;
+			continue;
+		}
 
 		let before = element.stretch[axis];
 		let after = before + sign * d / (2 * reach);
@@ -372,6 +388,113 @@ function applyVertexStretch(element, offset, mesh_space_vertex, ignore) {
 	return {changed, clamped};
 }
 
+/**
+ * Split a rendered extent into a whole size plus the smallest stretch that makes
+ * up the difference:
+ *
+ *     size    = round(extent - 2 * inflate)
+ *     stretch = extent / (size + 2 * inflate)
+ *
+ * The extent is preserved exactly, so the cube's rendered box does not change —
+ * only how much of it comes from size versus stretch. Rounding to nearest keeps
+ * the stretch as close to 1 as possible, which can mean a slight squash.
+ */
+function fitWholeSize(element, axis, extent) {
+	let inflate = element.inflate || 0;
+	let clamped = false;
+
+	if (!isFinite(extent)) return null;
+	if (extent <= 0) {
+		extent = MIN_STRETCH;
+		clamped = true;
+	}
+
+	let size = Math.max(0, Math.round(extent - 2 * inflate));
+	let reach = size + 2 * inflate;
+	if (reach <= 0) {
+		// A zero size with no inflate has nothing left to stretch, so keep one unit
+		size = 1;
+		reach = 1 + 2 * inflate;
+	}
+
+	let stretch = extent / reach;
+	if (stretch < MIN_STRETCH) {
+		stretch = MIN_STRETCH;
+		clamped = true;
+	}
+	return {size, stretch, clamped};
+}
+
+/**
+ * Writes a fitted size and stretch onto one axis, solving for `from` so the
+ * anchored rendered face lands exactly where it was. Solving for from beats
+ * resizing and then shifting: two separate float additions leave the size a few
+ * ulps off a whole number, which is the one thing this mode exists to avoid.
+ * `anchor_low` says whether the face being held is the low one.
+ */
+function setWholeSize(element, axis, fit, anchored_pos, anchor_low) {
+	let half_size = fit.size / 2;
+	let reach = half_size + (element.inflate || 0);
+	let from = anchor_low
+		? anchored_pos - half_size + reach * fit.stretch
+		: anchored_pos - half_size - reach * fit.stretch;
+
+	// `to - from` is only exactly `size` when from sits on a binary grid: for an
+	// arbitrary from, from + size subtracts back to a few ulps off a whole number,
+	// which is the one thing this mode exists to avoid, and enough to fail a
+	// whole-size check. Snapping from to 1/65536 makes both values exact, at the
+	// cost of up to 0.0000076 units of position, which is a millionth of a texel.
+	from = Math.round(from * POSITION_GRID) / POSITION_GRID;
+
+	element.from[axis] = from;
+	element.to[axis] = from + fit.size;
+	element.stretch[axis] = fit.stretch;
+}
+
+/** Rolls each selected cube's stretch into whole units of size, leaving the rendered box alone. */
+function bakeStretchIntoSize() {
+	let cubes = Cube.all.filter(cube => cube.selected && canStretch(cube));
+	let changes = [];
+
+	for (let cube of cubes) {
+		let per_axis = [];
+		for (let axis = 0; axis < 3; axis++) {
+			let inflate = cube.inflate || 0;
+			let extent = 2 * (cube.size(axis) / 2 + inflate) * cube.stretch[axis];
+			let fit = fitWholeSize(cube, axis, extent);
+			if (!fit) continue;
+			// Nothing to do if the size is already whole and the stretch is already 1
+			if (Math.abs(fit.size - cube.size(axis)) < 1e-9 && Math.abs(fit.stretch - cube.stretch[axis]) < 1e-9) continue;
+			per_axis.push({axis, fit});
+		}
+		if (per_axis.length) changes.push({cube, per_axis});
+	}
+
+	if (!changes.length) {
+		if (typeof Blockbench !== 'undefined' && Blockbench.showQuickMessage) {
+			Blockbench.showQuickMessage('Nothing to bake, sizes are already whole', 2000);
+		}
+		return 0;
+	}
+
+	Undo.initEdit({elements: changes.map(change => change.cube)});
+
+	for (let {cube, per_axis} of changes) {
+		for (let {axis, fit} of per_axis) {
+			// The extent is preserved, so holding the low face holds both faces
+			setWholeSize(cube, axis, fit, renderedFace(cube, axis, false), true);
+		}
+		if (cube.visibility !== false && cube.preview_controller) {
+			if (cube.preview_controller.updateGeometry) cube.preview_controller.updateGeometry(cube);
+			if (cube.box_uv && cube.preview_controller.updateUV) cube.preview_controller.updateUV(cube);
+		}
+	}
+
+	if (typeof updateNslideValues === 'function') updateNslideValues();
+	Undo.finishEdit('Bake stretch into size');
+	return changes.length;
+}
+
 /** Stands in for Vertexsnap.snap while the stretch mode is picked. */
 function vertexStretchSnap(data, options, amended) {
 	let elements = Vertexsnap.elements.slice();
@@ -387,6 +510,7 @@ function vertexStretchSnap(data, options, amended) {
 
 	let target = Vertexsnap.getGlobalVertexPos(data.element, data.vertex);
 	let global_delta = new THREE.Vector3().copy(target).sub(Vertexsnap.vertex_pos);
+	let whole = BarItems.vertex_snap_mode.get() === VERTEX_SNAP_WHOLE_MODE;
 	let clamped = false;
 
 	for (let element of elements) {
@@ -396,8 +520,13 @@ function vertexStretchSnap(data, options, amended) {
 		let offset = new THREE.Vector3().copy(global_delta).applyQuaternion(rotation).toArray();
 		let vertex = element.mesh.worldToLocal(new THREE.Vector3().copy(Vertexsnap.vertex_pos)).toArray();
 
-		let result = applyVertexStretch(element, offset, vertex, ignore);
+		let result = applyVertexStretch(element, offset, vertex, ignore, whole);
 		clamped = clamped || result.clamped;
+
+		if (whole && result.changed && element.box_uv && element.visibility !== false
+			&& element.preview_controller && element.preview_controller.updateUV) {
+			element.preview_controller.updateUV(element);
+		}
 	}
 
 	Vertexsnap.clearVertexGizmos();
@@ -441,7 +570,7 @@ function patchVertexSnap() {
 	original_snap = Vertexsnap.snap;
 	snap_wrapper = function (data, options = 0, amended) {
 		let mode = BarItems.vertex_snap_mode && BarItems.vertex_snap_mode.get();
-		let mine = mode === VERTEX_SNAP_MODE
+		let mine = (mode === VERTEX_SNAP_MODE || mode === VERTEX_SNAP_WHOLE_MODE)
 			&& Format && Format.stretch_cubes
 			&& !Vertexsnap.move_origin;
 
@@ -458,10 +587,34 @@ function patchVertexSnap() {
 			name: 'Stretch',
 			condition: () => Format && Format.stretch_cubes
 		};
-		if (select.values && !select.values.includes(VERTEX_SNAP_MODE)) {
-			select.values.push(VERTEX_SNAP_MODE);
+		select.options[VERTEX_SNAP_WHOLE_MODE] = {
+			name: 'Resize + Stretch',
+			condition: () => Format && Format.stretch_cubes
+		};
+		for (let key of [VERTEX_SNAP_MODE, VERTEX_SNAP_WHOLE_MODE]) {
+			if (select.values && !select.values.includes(key)) select.values.push(key);
 		}
 		mode_option_added = true;
+	}
+}
+
+function patchBakeAction() {
+	if (typeof Action !== 'function') return;
+
+	bake_action = new Action(BAKE_ACTION_ID, {
+		name: 'Bake Stretch into Size',
+		description: 'Roll each selected cube\'s stretch into whole units of size, leaving the cube exactly where it is on screen. Stretch is left holding only the fraction that will not fit in a whole unit.',
+		icon: 'grid_on',
+		category: 'edit',
+		condition: () => Format && Format.stretch_cubes && Cube.selected.length && Modes.edit,
+		click() {
+			bakeStretchIntoSize();
+		}
+	});
+
+	// Next to the stretch sliders, which is where you would look for it
+	if (typeof Toolbars !== 'undefined' && Toolbars.element_stretch) {
+		Toolbars.element_stretch.add(bake_action);
 	}
 }
 
@@ -474,11 +627,20 @@ function unpatchVertexSnap() {
 
 	let select = typeof BarItems !== 'undefined' && BarItems.vertex_snap_mode;
 	if (mode_option_added && select) {
-		if (select.value === VERTEX_SNAP_MODE && select.set) select.set('move');
-		if (select.options) delete select.options[VERTEX_SNAP_MODE];
-		if (select.values) select.values.remove(VERTEX_SNAP_MODE);
+		let mine = [VERTEX_SNAP_MODE, VERTEX_SNAP_WHOLE_MODE];
+		if (mine.includes(select.value) && select.set) select.set('move');
+		for (let key of mine) {
+			if (select.options) delete select.options[key];
+			if (select.values) select.values.remove(key);
+		}
 	}
 	mode_option_added = false;
+
+	// Action.delete() takes itself back out of any toolbar it was added to
+	if (bake_action) {
+		bake_action.delete();
+		bake_action = null;
+	}
 }
 
 function patchResize() {
@@ -528,6 +690,7 @@ function patchResize() {
 function patch() {
 	patchResize();
 	patchVertexSnap();
+	patchBakeAction();
 	edit_module = typeof TransformerModule !== 'undefined' && TransformerModule.modules && TransformerModule.modules.edit;
 	if (!edit_module) {
 		console.error('[Anchored Stretch] Could not find the edit transform module. This plugin needs Blockbench 5.0.5 or newer.');
@@ -617,7 +780,7 @@ Plugin.register(PLUGIN_ID, {
 		'Only active in formats that support cube stretching, such as the Hytale formats.'
 	].join('\n'),
 	icon: ICON,
-	version: PLUGIN_VERSION,
+	version: '1.8.0',
 	variant: 'both',
 	min_version: '5.0.5',
 	tags: ['Hytale', 'Transform'],
