@@ -104,7 +104,7 @@
  * difference is small.
  */
 
-const PLUGIN_VERSION = '1.8.1';
+const PLUGIN_VERSION = '1.8.2';
 const PLUGIN_ID = 'anchored_stretch';
 const SETTING_ID = 'anchored_stretch_tool';
 const RESIZE_SETTING_ID = 'anchored_stretch_resize';
@@ -378,6 +378,14 @@ function applyVertexStretch(element, offset, mesh_space_vertex, ignore, whole) {
 			setWholeSize(element, axis, fit, anchored, high);
 			clamped = clamped || fit.clamped;
 			changed = true;
+
+			// Per-face UV rectangles do not follow the size on their own. Core's
+			// resize() calls this straight after each axis changes; the whole-size
+			// paths set from/to directly, so they have to call it themselves.
+			// Direction matches core's `negative ? -1 : 1`: the side that grew.
+			if (typeof element.mapAutoUV === 'function') {
+				element.mapAutoUV({axis, direction: high ? 1 : -1});
+			}
 			continue;
 		}
 
@@ -496,6 +504,10 @@ function bakeStretchIntoSize() {
 		for (let {axis, fit} of per_axis) {
 			// The extent is preserved, so holding the low face holds both faces
 			setWholeSize(cube, axis, fit, renderedFace(cube, axis, false), true);
+			// Neither side grew on screen, so this is core's bidirectional case
+			if (typeof cube.mapAutoUV === 'function') {
+				cube.mapAutoUV({axis, direction: 0});
+			}
 		}
 		if (cube.visibility !== false && cube.preview_controller) {
 			if (cube.preview_controller.updateGeometry) cube.preview_controller.updateGeometry(cube);

@@ -183,5 +183,18 @@
         ]
       }
     ]
+  },
+  "1.8.2": {
+    "title": "UV follows the size",
+    "author": "Embody Games",
+    "date": "2026-09-07",
+    "categories": [
+      {
+        "title": "Fixed",
+        "list": [
+          "The UV map now follows the cube when Resize + Stretch or Bake Stretch into Size changes its size. The texels the resize added were missing from the UV map until you nudged a face by hand."
+        ]
+      }
+    ]
   }
 }

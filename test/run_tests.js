@@ -65,6 +65,16 @@ class Cube {
 	}
 	getTypeBehavior(key) { return key === 'stretchable' || key === 'resizable'; }
 	isStretched() { return !this.stretch.every(v => v === 1); }
+	// Core recomputes per-face UV rectangles from the current size here, so the
+	// size it sees at call time is what matters.
+	mapAutoUV(options = {}) {
+		this.auto_uv_calls = this.auto_uv_calls || [];
+		this.auto_uv_calls.push({
+			axis: options.axis,
+			direction: options.direction,
+			size_when_called: this.size(options.axis)
+		});
+	}
 
 	// js/outliner/types/cube.js -> Cube.prototype.resize (UV + size limiter omitted)
 	resize(val, axis, negative, allow_negative, bidirectional) {
@@ -1501,6 +1511,49 @@ test('baked stretch is clean too', () => {
 	cube.selected = true;
 	BarItems.anchored_stretch_bake.click();
 	assert.strictEqual(cube.stretch[0], 1, 'an exact 12 leaves no stretch, got ' + cube.stretch[0]);
+});
+
+test('per-face UV is remapped to the new size, on the axes that changed', () => {
+	let cube = attachMesh(new Cube({from: [0, 0, 0], to: [8, 8, 8]}));
+	vertexSnap([cube], [8, 8, 8], [10.7, 10, 8], {mode: 'resize_stretch'});
+
+	let calls = cube.auto_uv_calls || [];
+	assert.strictEqual(calls.length, 2, 'called once per changed axis, got ' + calls.length);
+
+	let x = calls.find(c => c.axis === 0);
+	assert.ok(x, 'X was remapped');
+	assert.strictEqual(x.size_when_called, 11, 'X UV saw the new size, not the old one');
+	assert.strictEqual(x.direction, 1, 'grew on the high side');
+
+	let y = calls.find(c => c.axis === 1);
+	assert.strictEqual(y.size_when_called, 10, 'Y UV saw the new size');
+	assert.ok(!calls.find(c => c.axis === 2), 'Z was untouched, so it was not remapped');
+});
+
+test('remapping follows the side that grew', () => {
+	let cube = attachMesh(new Cube({from: [0, 0, 0], to: [8, 8, 8]}));
+	vertexSnap([cube], [0, 0, 0], [-2.7, 0, 0], {mode: 'resize_stretch'});
+	let x = (cube.auto_uv_calls || []).find(c => c.axis === 0);
+	assert.strictEqual(x.direction, -1, 'the low side grew, so direction is -1');
+	assert.strictEqual(x.size_when_called, 11, 'and the UV saw size 11');
+});
+
+test('plain stretch mode does not touch the UV, since size never changes', () => {
+	let cube = attachMesh(new Cube({from: [0, 0, 0], to: [8, 8, 8]}));
+	vertexSnap([cube], [8, 8, 8], [10.7, 8, 8], {mode: 'stretch'});
+	assert.ok(!cube.auto_uv_calls, 'mapAutoUV was not called');
+});
+
+test('baking remaps the UV as a centred change', () => {
+	let cube = new Cube({from: [0, 0, 0], to: [8, 8, 8], stretch: [1.5, 1, 1]});
+	Cube.all = [cube];
+	cube.selected = true;
+	BarItems.anchored_stretch_bake.click();
+
+	let calls = cube.auto_uv_calls || [];
+	assert.strictEqual(calls.length, 1, 'one axis changed, got ' + calls.length);
+	assert.strictEqual(calls[0].size_when_called, 12, 'UV saw the baked size');
+	assert.strictEqual(calls[0].direction, 0, 'neither side grew on screen');
 });
 
 test('box_uv cubes get their UV refreshed', () => {
