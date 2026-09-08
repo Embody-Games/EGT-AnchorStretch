@@ -196,5 +196,18 @@
         ]
       }
     ]
+  },
+  "1.8.3": {
+    "title": "UV panel repaints straight away",
+    "author": "Embody Games",
+    "date": "2026-09-08",
+    "categories": [
+      {
+        "title": "Fixed",
+        "list": [
+          "The UV map redraws as soon as Resize + Stretch or Bake Stretch into Size changes a cube, instead of waiting until you move the pointer over the UV panel."
+        ]
+      }
+    ]
   }
 }
