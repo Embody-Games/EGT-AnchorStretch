@@ -222,5 +222,18 @@
         ]
       }
     ]
+  },
+  "1.9.1": {
+    "title": "Whole units first",
+    "author": "Embody Games",
+    "date": "2026-09-08",
+    "categories": [
+      {
+        "title": "Changed",
+        "list": [
+          "The Resize + Stretch tool drags in whole units with nothing held, so it behaves like a plain resize and adds no stretch unless you ask for it. Shift halves the step, Ctrl quarters it, and Ctrl+Shift stops snapping altogether."
+        ]
+      }
+    ]
   }
 }
