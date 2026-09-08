@@ -104,7 +104,7 @@
  * difference is small.
  */
 
-const PLUGIN_VERSION = '1.8.3';
+const PLUGIN_VERSION = '1.9.0';
 const PLUGIN_ID = 'anchored_stretch';
 const SETTING_ID = 'anchored_stretch_tool';
 const RESIZE_SETTING_ID = 'anchored_stretch_resize';

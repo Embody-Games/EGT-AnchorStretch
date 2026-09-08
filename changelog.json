@@ -209,5 +209,18 @@
         ]
       }
     ]
+  },
+  "1.9.0": {
+    "title": "Resize + Stretch tool",
+    "author": "Embody Games",
+    "date": "2026-09-08",
+    "categories": [
+      {
+        "title": "Added",
+        "list": [
+          "A Resize + Stretch tool in the toolbar, next to the Stretch tool. Drag a handle and the cube grows by whole units of size, with stretch covering only the fraction that will not fit and the opposite face staying put. Hold Shift to snap to whole units for a plain resize, Ctrl for finer steps."
+        ]
+      }
+    ]
   }
 }
