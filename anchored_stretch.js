@@ -128,14 +128,14 @@ const VERTEX_SNAP_MODE = 'stretch';
 const VERTEX_SNAP_WHOLE_MODE = 'resize_stretch';
 const BAKE_ACTION_ID = 'anchored_stretch_bake';
 const TOOL_ID = 'anchored_resize_stretch_tool';
-// Drag steps for the Resize + Stretch tool. The default is fine enough that a drag
-// usually lands part way through a unit, which is the point: whole units go into
-// size and the remainder into stretch. Shift snaps to whole units for a clean
-// resize, Ctrl and Ctrl+Shift go finer.
-const TOOL_STEP = 1 / 16;
-const TOOL_STEP_SHIFT = 1;
-const TOOL_STEP_CTRL = 1 / 64;
-const TOOL_STEP_CTRL_SHIFT = 1 / 256;
+// Drag steps for the Resize + Stretch tool. Nothing held behaves like a plain
+// resize, in whole units; Shift halves the step and Ctrl quarters it, matching the
+// stretch tool's ladder. Ctrl+Shift stops snapping altogether, where the floor is
+// the six-decimal rounding every stretch value goes through anyway.
+const TOOL_STEP = 1;
+const TOOL_STEP_SHIFT = 1 / 2;
+const TOOL_STEP_CTRL = 1 / 4;
+const TOOL_STEP_UNSNAPPED = 0;
 const MIN_STRETCH = 0.0001;
 // Stretch is rounded to this many decimals in every vertex snap path. Float noise
 // otherwise turns a gap that was a whole number into 0.9999999990686774 rather
@@ -500,7 +500,7 @@ function toolStep(event) {
 	let shift = !!((event && event.shiftKey) || overrides.shift);
 	let ctrl = !!((event && (event.ctrlOrCmd || event.ctrlKey || event.metaKey)) || overrides.ctrl);
 
-	if (shift && ctrl) return TOOL_STEP_CTRL_SHIFT;
+	if (shift && ctrl) return TOOL_STEP_UNSNAPPED;
 	if (ctrl) return TOOL_STEP_CTRL;
 	if (shift) return TOOL_STEP_SHIFT;
 	return TOOL_STEP;
@@ -519,6 +519,7 @@ function toolOffset(context) {
 		: point[axis];
 	if (!isFinite(distance)) return 0;
 	let step = toolStep(context.event);
+	if (!step) return distance; // Ctrl+Shift: no snapping, six decimals is the floor
 	return Math.round(distance / step) * step;
 }
 

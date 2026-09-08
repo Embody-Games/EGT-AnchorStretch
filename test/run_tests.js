@@ -1744,24 +1744,46 @@ test('the tool is registered and sits next to the Stretch tool', () => {
 	assert.strictEqual(ids[ids.indexOf('stretch_tool') + 1], 'anchored_resize_stretch_tool', 'placed after stretch_tool');
 });
 
-test('a part-way drag puts whole units in size and the rest in stretch', () => {
+test('nothing held behaves like a plain resize, in whole units', () => {
 	let cube = new Cube({from: [0, 0, 0], to: [8, 8, 8]});
 	toolDrag([cube], 'X', [3.4]);
 
-	// 3.4 snaps down to 3.375 on the 1/16 step, so the extent is 11.375
-	assert.strictEqual(cube.size(0), 11, 'whole units went into size, got ' + cube.size(0));
-	assert.ok(cube.stretch[0] > 1 && cube.stretch[0] < 1.05, 'the remainder went into stretch, got ' + cube.stretch[0]);
+	assert.strictEqual(cube.size(0), 11, '3.4 snaps to 3, got size ' + cube.size(0));
+	assert.strictEqual(cube.stretch[0], 1, 'no stretch introduced, got ' + cube.stretch[0]);
 	assertFaceOnGrid(renderedBounds(cube).from[0], 0, 'the far face stayed put');
-	assertTarget(renderedBounds(cube).to[0], 11.375, 'the dragged face followed the cursor');
+	assertFaceOnGrid(renderedBounds(cube).to[0], 11, 'and the dragged face is on a whole unit');
 });
 
-test('holding shift snaps to whole units and leaves no stretch', () => {
-	let cube = new Cube({from: [0, 0, 0], to: [8, 8, 8]});
-	toolDrag([cube], 'X', [3.4], {shift: true});
+test('the modifier ladder: half, quarter, then unsnapped', () => {
+	let cases = [
+		[{}, 11, 1],                      // whole units
+		[{shift: true}, 11, 1.045455],    // 3.5 -> extent 11.5 over a size of 11
+		[{ctrl: true}, 11, 1.034091]      // 3.25 -> extent 11.25 wait, see below
+	];
+	// nothing held: 3.4 -> 3
+	let a = new Cube({from: [0, 0, 0], to: [8, 8, 8]});
+	toolDrag([a], 'X', [3.4]);
+	assert.strictEqual(a.size(0), 11, 'whole: size 11');
+	assert.strictEqual(a.stretch[0], 1, 'whole: no stretch');
 
-	assert.strictEqual(cube.size(0), 11, 'size 11');
-	assert.strictEqual(cube.stretch[0], 1, 'no stretch at all, got ' + cube.stretch[0]);
-	assertFaceOnGrid(renderedBounds(cube).from[0], 0, 'far face stayed');
+	// shift: 3.4 -> 3.5, extent 11.5, nearest whole size 12, stretch 11.5/12
+	let b = new Cube({from: [0, 0, 0], to: [8, 8, 8]});
+	toolDrag([b], 'X', [3.4], {shift: true});
+	assert.strictEqual(b.size(0), 12, 'half steps: size 12, got ' + b.size(0));
+	assert.ok(close(b.stretch[0], roundTo6(11.5 / 12)), 'half steps: stretch, got ' + b.stretch[0]);
+
+	// ctrl: 3.4 -> 3.5 on a quarter step too (3.4 is nearer 3.5 than 3.25)
+	let c = new Cube({from: [0, 0, 0], to: [8, 8, 8]});
+	toolDrag([c], 'X', [3.3], {ctrl: true});
+	assert.strictEqual(c.size(0), 11, 'quarter steps: 3.3 -> 3.25, size 11, got ' + c.size(0));
+	assert.ok(close(c.stretch[0], roundTo6(11.25 / 11)), 'quarter steps: stretch, got ' + c.stretch[0]);
+
+	// ctrl+shift: no snapping at all
+	let d = new Cube({from: [0, 0, 0], to: [8, 8, 8]});
+	toolDrag([d], 'X', [3.376543], {shift: true, ctrl: true});
+	assert.strictEqual(d.size(0), 11, 'unsnapped: size 11');
+	assert.ok(close(d.stretch[0], roundTo6(11.376543 / 11)), 'unsnapped: exact drag, got ' + d.stretch[0]);
+	assertFaceOnGrid(renderedBounds(d).from[0], 0, 'unsnapped: far face still exact');
 });
 
 test('dragging the negative handle grows the low side and holds the high one', () => {
@@ -1770,15 +1792,15 @@ test('dragging the negative handle grows the low side and holds the high one', (
 
 	assert.strictEqual(cube.size(0), 11, 'size grew, got ' + cube.size(0));
 	assertFaceOnGrid(renderedBounds(cube).to[0], 8, 'the high face stayed put');
-	assertTarget(renderedBounds(cube).from[0], -3.375, 'the low face followed the cursor');
+	assertFaceOnGrid(renderedBounds(cube).from[0], -3, 'the low face moved out by a whole unit');
 });
 
 test('dragging inward shrinks it', () => {
 	let cube = new Cube({from: [0, 0, 0], to: [8, 8, 8]});
-	toolDrag([cube], 'X', [-2.5]);
+	toolDrag([cube], 'X', [-2.4]);
 	assert.strictEqual(cube.size(0), 6, 'size 6, got ' + cube.size(0));
 	assertFaceOnGrid(renderedBounds(cube).from[0], 0, 'far face stayed');
-	assertTarget(renderedBounds(cube).to[0], 5.5, 'dragged face followed');
+	assertFaceOnGrid(renderedBounds(cube).to[0], 6, 'dragged face on a whole unit');
 });
 
 test('a long drag recomputes rather than accumulating', () => {
@@ -1789,13 +1811,13 @@ test('a long drag recomputes rather than accumulating', () => {
 	toolDrag([cube], 'X', steps);
 
 	assertFaceOnGrid(renderedBounds(cube).from[0], 0, 'the anchored face never drifted');
-	assertTarget(renderedBounds(cube).to[0], 8 + Math.round((4 / 3) / (1 / 16)) * (1 / 16), 'ends where the last move put it');
+	assertFaceOnGrid(renderedBounds(cube).to[0], 8 + Math.round(4 / 3), 'ends where the last move put it');
 	assert.ok(Number.isInteger(cube.size(0)), 'size still whole, got ' + cube.size(0));
 });
 
 test('existing stretch is absorbed into whole units', () => {
 	let cube = new Cube({from: [0, 0, 0], to: [8, 8, 8], stretch: [1.5, 1, 1]});
-	toolDrag([cube], 'X', [0.25]);   // extent 12 -> 12.25, which rounds to a size of 12
+	toolDrag([cube], 'X', [0.25], {ctrl: true});   // extent 12 -> 12.25, which rounds to a size of 12
 	assert.strictEqual(cube.size(0), 12, 'the old stretch became size, got ' + cube.size(0));
 	assert.ok(close(cube.stretch[0], roundTo6(12.25 / 12)), 'and the rest is stretch, got ' + cube.stretch[0]);
 	assertFaceOnGrid(renderedBounds(cube).from[0], -2, 'anchored face held');

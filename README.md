@@ -21,7 +21,9 @@ Requires Blockbench 5.0.5 or newer.
 
 **Resizing a stretched cube stays anchored.** Growing a cube's size by `d` used to move the anchored face by `(d / 2) * (1 - stretch)`. It now stays put — on the gizmo, the size sliders and keyboard nudges alike.
 
-**A Resize + Stretch tool.** Sits next to the Stretch tool in the toolbar. Drag a handle and the cube grows by whole units of size, with stretch covering only the fraction that will not fit, opposite face anchored. The drag steps in 1/16 of a unit so it usually lands part way through a unit, which is the point. Hold **Shift** to snap to whole units for a plain resize with no stretch at all, **Ctrl** for 1/64 steps, both for 1/256.
+**A Resize + Stretch tool.** Sits next to the Stretch tool in the toolbar. Drag a handle and the cube grows by whole units of size, with stretch covering only the fraction that will not fit, opposite face anchored.
+
+With nothing held it drags in whole units, so it behaves like a plain resize and introduces no stretch at all. **Shift** halves the step, **Ctrl** quarters it, and **Ctrl+Shift** stops snapping altogether, where the only floor is the six decimals every stretch value is rounded to. A cube that already carries stretch gets it absorbed into whole units on any of those, including a plain whole-unit drag.
 
 **Vertex snap gains a Stretch mode.** Pick a corner, pick a target, and the cube stretches to reach it with the opposite corner anchored. Handy for closing the gap between two cubes at different angles.
 
