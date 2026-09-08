@@ -348,6 +348,14 @@ BarItems.vertex_snap_mode = {
 
 Blockbench.showQuickMessage = function (text) { Blockbench.last_quick_message = text; };
 
+// The UV panel: core reloads it, the Hytale plugin force-updates the same Vue component
+const UVEditor = {
+    loads: 0,
+    forced: 0,
+    loadData() { UVEditor.loads++; },
+    vue: {$forceUpdate() { UVEditor.forced++; }}
+};
+
 const Modes = {edit: true};
 Cube.all = [];
 Cube.selected = [];
@@ -389,7 +397,7 @@ const Plugin = {
 Object.assign(globalThis, {
 	settings, Setting, Format, Toolbox, Outliner, Mesh, BarItems, Pressing, Blockbench,
 	trimFloatNumber, updateNslideValues, TransformerModule, Plugin, Cube,
-	THREE, Vertexsnap, Undo, Canvas, OutlinerElement, tl,
+	THREE, Vertexsnap, Undo, Canvas, OutlinerElement, tl, UVEditor,
 	Action, Toolbar, Toolbars, Modes
 });
 
@@ -1554,6 +1562,35 @@ test('baking remaps the UV as a centred change', () => {
 	assert.strictEqual(calls.length, 1, 'one axis changed, got ' + calls.length);
 	assert.strictEqual(calls[0].size_when_called, 12, 'UV saw the baked size');
 	assert.strictEqual(calls[0].direction, 0, 'neither side grew on screen');
+});
+
+test('the UV panel is repainted, not left until the pointer enters it', () => {
+	let cube = attachMesh(new Cube({from: [0, 0, 0], to: [8, 8, 8]}));
+	UVEditor.loads = 0; UVEditor.forced = 0;
+	vertexSnap([cube], [8, 8, 8], [10.7, 8, 8], {mode: 'resize_stretch'});
+	assert.strictEqual(UVEditor.loads, 1, 'panel data reloaded once');
+	assert.strictEqual(UVEditor.forced, 1, 'and the component re-rendered once');
+});
+
+test('a plain stretch snap leaves the UV panel alone', () => {
+	let cube = attachMesh(new Cube({from: [0, 0, 0], to: [8, 8, 8]}));
+	UVEditor.loads = 0; UVEditor.forced = 0;
+	vertexSnap([cube], [8, 8, 8], [10.7, 8, 8], {mode: 'stretch'});
+	assert.strictEqual(UVEditor.loads, 0, 'no size change, so nothing to repaint');
+});
+
+test('baking repaints the UV panel too, but not when there is nothing to bake', () => {
+	let cube = new Cube({from: [0, 0, 0], to: [8, 8, 8], stretch: [1.5, 1, 1]});
+	Cube.all = [cube]; cube.selected = true;
+	UVEditor.loads = 0; UVEditor.forced = 0;
+	BarItems.anchored_stretch_bake.click();
+	assert.strictEqual(UVEditor.loads, 1, 'repainted after a bake');
+
+	let clean = new Cube({from: [0, 0, 0], to: [8, 8, 8]});
+	Cube.all = [clean]; clean.selected = true;
+	UVEditor.loads = 0;
+	BarItems.anchored_stretch_bake.click();
+	assert.strictEqual(UVEditor.loads, 0, 'a no-op bake does not touch the panel');
 });
 
 test('box_uv cubes get their UV refreshed', () => {

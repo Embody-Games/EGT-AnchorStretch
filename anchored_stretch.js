@@ -516,8 +516,26 @@ function bakeStretchIntoSize() {
 	}
 
 	if (typeof updateNslideValues === 'function') updateNslideValues();
+	refreshUVPanel();
 	Undo.finishEdit('Bake stretch into size');
 	return changes.length;
+}
+
+/**
+ * Repaints the UV panel. The face rectangles are already correct by the time this
+ * runs; without it the panel keeps drawing the old ones until the pointer enters
+ * it. Core reloads the panel from updateSelection(), which only reaches it on a
+ * tick, and the Hytale plugin force-updates the same Vue component after its own
+ * UV repairs.
+ */
+function refreshUVPanel() {
+	if (typeof UVEditor === 'undefined' || !UVEditor) return;
+	try {
+		if (typeof UVEditor.loadData === 'function') UVEditor.loadData();
+		if (UVEditor.vue && typeof UVEditor.vue.$forceUpdate === 'function') UVEditor.vue.$forceUpdate();
+	} catch (error) {
+		console.error('[Anchored Stretch] could not refresh the UV panel', error);
+	}
 }
 
 /** Stands in for Vertexsnap.snap while the stretch mode is picked. */
@@ -537,6 +555,7 @@ function vertexStretchSnap(data, options, amended) {
 	let global_delta = new THREE.Vector3().copy(target).sub(Vertexsnap.vertex_pos);
 	let whole = BarItems.vertex_snap_mode.get() === VERTEX_SNAP_WHOLE_MODE;
 	let clamped = false;
+	let uv_changed = false;
 
 	for (let element of elements) {
 		if (!canStretch(element) || typeof element.size !== 'function' || !element.mesh) continue;
@@ -548,9 +567,12 @@ function vertexStretchSnap(data, options, amended) {
 		let result = applyVertexStretch(element, offset, vertex, ignore, whole);
 		clamped = clamped || result.clamped;
 
-		if (whole && result.changed && element.box_uv && element.visibility !== false
-			&& element.preview_controller && element.preview_controller.updateUV) {
-			element.preview_controller.updateUV(element);
+		if (whole && result.changed) {
+			uv_changed = true;
+			if (element.box_uv && element.visibility !== false
+				&& element.preview_controller && element.preview_controller.updateUV) {
+				element.preview_controller.updateUV(element);
+			}
 		}
 	}
 
@@ -565,6 +587,7 @@ function vertexStretchSnap(data, options, amended) {
 		update_options.group_aspects = {transform: true};
 	}
 	Canvas.updateView(update_options);
+	if (uv_changed) refreshUVPanel();
 	Undo.finishEdit('Vertex snap stretch');
 	Vertexsnap.step1 = true;
 
