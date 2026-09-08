@@ -193,6 +193,8 @@ new TransformerModule('edit', {
 			obj.temp_data.oldCenter = obj.from.map((from, i) => (from + obj.to[i]) / 2);
 		});
 		this.undo_snapshot = Outliner.selected.map(el => ({el, from: el.from.slice(), to: el.to.slice(), stretch: el.stretch.slice()}));
+		// core's onStart opens the undo entry for every tool, at the end
+		Undo.initEdit({elements: Outliner.selected.slice()});
 	},
 	onMove(context) {
 		let {event, axis, axis_number, value, second_axis, second_axis_number} = context;
@@ -375,7 +377,12 @@ class Action {
 }
 class Toolbar {
 	constructor(id) { this.id = id; this.children = []; }
-	add(item) { this.children.push(item); item.toolbars.push(this); return this; }
+	add(item, position) {
+		if (position === undefined) position = this.children.length;
+		this.children.splice(position, 0, item);
+		item.toolbars.push(this);
+		return this;
+	}
 	remove(item) {
 		let i = this.children.indexOf(item);
 		if (i !== -1) this.children.splice(i, 1);
@@ -384,7 +391,14 @@ class Toolbar {
 		return this;
 	}
 }
-const Toolbars = {element_stretch: new Toolbar('element_stretch')};
+class Tool extends Action {
+	select() { Toolbox.selected = this; return this; }
+}
+const Toolbars = {
+	element_stretch: new Toolbar('element_stretch'),
+	tools: new Toolbar('tools')
+};
+Toolbars.tools.children.push('move_tool', 'resize_tool', 'rotate_tool', 'vertex_snap_tool', 'stretch_tool', 'knife_tool');
 
 const registered = {};
 const Plugin = {
@@ -398,7 +412,7 @@ Object.assign(globalThis, {
 	settings, Setting, Format, Toolbox, Outliner, Mesh, BarItems, Pressing, Blockbench,
 	trimFloatNumber, updateNslideValues, TransformerModule, Plugin, Cube,
 	THREE, Vertexsnap, Undo, Canvas, OutlinerElement, tl, UVEditor,
-	Action, Toolbar, Toolbars, Modes
+	Action, Tool, Toolbar, Toolbars, Modes
 });
 
 // Array.remove, used by the plugin when it takes its mode back out of the dropdown
@@ -520,6 +534,7 @@ function test(name, fn) {
 	}
 }
 const close = (a, b) => Math.abs(a - b) < 1e-9;
+const roundTo6 = v => Math.round(v * 1e6) / 1e6;
 function assertFace(actual, expected, label) {
 	assert.ok(close(actual, expected), `${label}: expected ${expected}, got ${actual}`);
 }
@@ -1698,6 +1713,117 @@ test('baking is wrapped in a named undo entry', () => {
 	assert.ok(undo_log.find(e => e.call === 'finishEdit' && e.name === 'Bake stretch into size'), 'named the edit');
 });
 
+console.log('\nAnchored Stretch — resize + stretch tool\n');
+
+/** Drag a resize-style handle with the Resize + Stretch tool selected. */
+function toolDrag(cubes, handle, distances, {shift = false, ctrl = false} = {}) {
+	let module = TransformerModule.modules.edit;
+	let previous = Toolbox.selected;
+	Toolbox.selected = BarItems.anchored_resize_stretch_tool;
+	Outliner.selected = cubes;
+	let direction = handle[0] === 'N' ? -1 : 1;
+	let axis = handle.replace(/^N/, '').toLowerCase();
+	undo_log.length = 0;
+
+	module.dispatchPointerDown({event: {}});
+	for (let d of distances) {
+		let point = {x: 0, y: 0, z: 0};
+		point[axis] = d;
+		module.dispatchMove({event: {shiftKey: shift, ctrlKey: ctrl, metaKey: false}, point, axis, axis_number: AXES[axis], direction});
+	}
+	module.dispatchEnd({event: {}, has_changed: true, keep_changes: true});
+	Toolbox.selected = previous;
+}
+
+test('the tool is registered and sits next to the Stretch tool', () => {
+	let tool = BarItems.anchored_resize_stretch_tool;
+	assert.ok(tool, 'registered');
+	assert.strictEqual(tool.name, 'Resize + Stretch', 'named');
+	assert.strictEqual(tool.transformerMode, 'scale', 'uses the resize gizmo');
+	let ids = Toolbars.tools.children.map(c => (c && c.id) || c);
+	assert.strictEqual(ids[ids.indexOf('stretch_tool') + 1], 'anchored_resize_stretch_tool', 'placed after stretch_tool');
+});
+
+test('a part-way drag puts whole units in size and the rest in stretch', () => {
+	let cube = new Cube({from: [0, 0, 0], to: [8, 8, 8]});
+	toolDrag([cube], 'X', [3.4]);
+
+	// 3.4 snaps down to 3.375 on the 1/16 step, so the extent is 11.375
+	assert.strictEqual(cube.size(0), 11, 'whole units went into size, got ' + cube.size(0));
+	assert.ok(cube.stretch[0] > 1 && cube.stretch[0] < 1.05, 'the remainder went into stretch, got ' + cube.stretch[0]);
+	assertFaceOnGrid(renderedBounds(cube).from[0], 0, 'the far face stayed put');
+	assertTarget(renderedBounds(cube).to[0], 11.375, 'the dragged face followed the cursor');
+});
+
+test('holding shift snaps to whole units and leaves no stretch', () => {
+	let cube = new Cube({from: [0, 0, 0], to: [8, 8, 8]});
+	toolDrag([cube], 'X', [3.4], {shift: true});
+
+	assert.strictEqual(cube.size(0), 11, 'size 11');
+	assert.strictEqual(cube.stretch[0], 1, 'no stretch at all, got ' + cube.stretch[0]);
+	assertFaceOnGrid(renderedBounds(cube).from[0], 0, 'far face stayed');
+});
+
+test('dragging the negative handle grows the low side and holds the high one', () => {
+	let cube = new Cube({from: [0, 0, 0], to: [8, 8, 8]});
+	toolDrag([cube], 'NX', [-3.4]);
+
+	assert.strictEqual(cube.size(0), 11, 'size grew, got ' + cube.size(0));
+	assertFaceOnGrid(renderedBounds(cube).to[0], 8, 'the high face stayed put');
+	assertTarget(renderedBounds(cube).from[0], -3.375, 'the low face followed the cursor');
+});
+
+test('dragging inward shrinks it', () => {
+	let cube = new Cube({from: [0, 0, 0], to: [8, 8, 8]});
+	toolDrag([cube], 'X', [-2.5]);
+	assert.strictEqual(cube.size(0), 6, 'size 6, got ' + cube.size(0));
+	assertFaceOnGrid(renderedBounds(cube).from[0], 0, 'far face stayed');
+	assertTarget(renderedBounds(cube).to[0], 5.5, 'dragged face followed');
+});
+
+test('a long drag recomputes rather than accumulating', () => {
+	let cube = new Cube({from: [0, 0, 0], to: [8, 8, 8]});
+	let steps = [];
+	for (let i = 1; i <= 30; i++) steps.push(i / 3);
+	for (let i = 29; i >= 4; i--) steps.push(i / 3);
+	toolDrag([cube], 'X', steps);
+
+	assertFaceOnGrid(renderedBounds(cube).from[0], 0, 'the anchored face never drifted');
+	assertTarget(renderedBounds(cube).to[0], 8 + Math.round((4 / 3) / (1 / 16)) * (1 / 16), 'ends where the last move put it');
+	assert.ok(Number.isInteger(cube.size(0)), 'size still whole, got ' + cube.size(0));
+});
+
+test('existing stretch is absorbed into whole units', () => {
+	let cube = new Cube({from: [0, 0, 0], to: [8, 8, 8], stretch: [1.5, 1, 1]});
+	toolDrag([cube], 'X', [0.25]);   // extent 12 -> 12.25, which rounds to a size of 12
+	assert.strictEqual(cube.size(0), 12, 'the old stretch became size, got ' + cube.size(0));
+	assert.ok(close(cube.stretch[0], roundTo6(12.25 / 12)), 'and the rest is stretch, got ' + cube.stretch[0]);
+	assertFaceOnGrid(renderedBounds(cube).from[0], -2, 'anchored face held');
+});
+
+test('the tool remaps UV and repaints the panel when the drag ends', () => {
+	let cube = new Cube({from: [0, 0, 0], to: [8, 8, 8]});
+	UVEditor.loads = 0;
+	toolDrag([cube], 'X', [3.4]);
+	let calls = cube.auto_uv_calls || [];
+	assert.ok(calls.length, 'UV remapped');
+	assert.strictEqual(calls[calls.length - 1].size_when_called, 11, 'UV saw the final size');
+	assert.strictEqual(UVEditor.loads, 1, 'panel repainted once, at the end of the drag');
+});
+
+test('the drag is one undo entry, named for the tool', () => {
+	let cube = new Cube({from: [0, 0, 0], to: [8, 8, 8]});
+	toolDrag([cube], 'X', [1.5, 2.5, 3.4]);
+	assert.strictEqual(undo_log.filter(e => e.call === 'initEdit').length, 1, 'one edit opened');
+	let finish = undo_log.filter(e => e.call === 'finishEdit');
+	assert.strictEqual(finish.length, 1, 'one edit closed');
+	assert.strictEqual(finish[0].name, 'Resize and stretch', 'named for the tool');
+});
+
+test('unloading the tool hands the toolbar back', () => {
+	assert.ok(Toolbars.tools.children.includes(BarItems.anchored_resize_stretch_tool), 'in the toolbar while loaded');
+});
+
 console.log('\nAnchored Stretch — teardown\n');
 
 test('unload restores all patches', () => {
@@ -1714,6 +1840,8 @@ test('unload restores all patches', () => {
 	assert.ok(!BarItems.vertex_snap_mode.options.resize_stretch, 'resize+stretch mode removed too');
 	assert.ok(!BarItems.anchored_stretch_bake, 'bake action removed from BarItems');
 	assert.strictEqual(Toolbars.element_stretch.children.length, 0, 'and out of the stretch toolbar');
+	assert.ok(!BarItems.anchored_resize_stretch_tool, 'tool removed from BarItems');
+	assert.ok(!Toolbars.tools.children.find(c => c && c.id === 'anchored_resize_stretch_tool'), 'and out of the tools toolbar');
 	assert.strictEqual(BarItems.vertex_snap_mode.get(), 'move', 'active mode reset off the removed option');
 	assert.ok(module.onMove !== wrapped_on_move, 'onMove restored');
 	assert.ok(module.calculateOffset !== wrapped_calculate, 'calculateOffset restored');

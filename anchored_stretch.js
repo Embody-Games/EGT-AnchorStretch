@@ -127,6 +127,15 @@ const UNITS_PER_STEP = 1;
 const VERTEX_SNAP_MODE = 'stretch';
 const VERTEX_SNAP_WHOLE_MODE = 'resize_stretch';
 const BAKE_ACTION_ID = 'anchored_stretch_bake';
+const TOOL_ID = 'anchored_resize_stretch_tool';
+// Drag steps for the Resize + Stretch tool. The default is fine enough that a drag
+// usually lands part way through a unit, which is the point: whole units go into
+// size and the remainder into stretch. Shift snaps to whole units for a clean
+// resize, Ctrl and Ctrl+Shift go finer.
+const TOOL_STEP = 1 / 16;
+const TOOL_STEP_SHIFT = 1;
+const TOOL_STEP_CTRL = 1 / 64;
+const TOOL_STEP_CTRL_SHIFT = 1 / 256;
 const MIN_STRETCH = 0.0001;
 // Stretch is rounded to this many decimals in every vertex snap path. Float noise
 // otherwise turns a gap that was a whole number into 0.9999999990686774 rather
@@ -158,6 +167,7 @@ let original_snap;
 let snap_wrapper;
 let mode_option_added = false;
 let bake_action;
+let resize_stretch_tool;
 
 // uuid -> { from, to, stretch } captured when a stretch drag starts
 let snapshots = new Map();
@@ -472,6 +482,97 @@ function setWholeSize(element, axis, fit, anchored_pos, anchor_low) {
 	element.stretch[axis] = fit.stretch;
 }
 
+/** Where a rendered face sat when the drag started. */
+function snapshotFace(snapshot, element, axis, high) {
+	let half_size = (snapshot.to[axis] - snapshot.from[axis]) / 2;
+	let centre = snapshot.from[axis] + half_size;
+	let reach = (half_size + (element.inflate || 0)) * snapshot.stretch[axis];
+	return high ? centre + reach : centre - reach;
+}
+
+function toolActive() {
+	return Format && Format.stretch_cubes && Toolbox.selected && Toolbox.selected.id === TOOL_ID;
+}
+
+/** Shift snaps to whole units, Ctrl goes finer, both together finer still. */
+function toolStep(event) {
+	let overrides = (typeof Pressing !== 'undefined' && Pressing.overrides) || {};
+	let shift = !!((event && event.shiftKey) || overrides.shift);
+	let ctrl = !!((event && (event.ctrlOrCmd || event.ctrlKey || event.metaKey)) || overrides.ctrl);
+
+	if (shift && ctrl) return TOOL_STEP_CTRL_SHIFT;
+	if (ctrl) return TOOL_STEP_CTRL;
+	if (shift) return TOOL_STEP_SHIFT;
+	return TOOL_STEP;
+}
+
+/** The drag distance along the handle's axis, snapped to the tool's step. */
+function toolOffset(context) {
+	let {point, axis, second_axis} = context;
+	if (second_axis) {
+		if (axis == 'y') { axis = 'z'; }
+		else if (second_axis == 'y') { axis = 'y'; }
+		else if (second_axis == 'z') { axis = 'x'; }
+	}
+	let distance = axis == 'e'
+		? (typeof point.length === 'function' ? point.length() : Math.sqrt(point.x * point.x + point.y * point.y + point.z * point.z)) * Math.sign(point.y || point.x)
+		: point[axis];
+	if (!isFinite(distance)) return 0;
+	let step = toolStep(context.event);
+	return Math.round(distance / step) * step;
+}
+
+/**
+ * The Resize + Stretch tool's drag. Same fit as the snap mode: the gap goes into
+ * whole units of size and stretch covers what is left over.
+ *
+ * Core's resize() grows a cube by `value` on the positive handle and by `-value`
+ * on the negative one, so the change in extent is direction * value. The opposite
+ * face is held, measured from where it sat when the drag started, so the whole
+ * drag recomputes rather than accumulating.
+ */
+function applyToolResize(context) {
+	// Plane and uniform handles have no single side to hold, same as everywhere else
+	if (context.second_axis || context.axis === 'e') return;
+
+	let axis = context.axis_number;
+	if (typeof axis !== 'number' || axis < 0 || axis > 2) return;
+
+	let direction = context.direction === -1 ? -1 : 1;
+	let hold_high = direction === -1;
+	let affected = [];
+
+	for (let element of Outliner.selected) {
+		let snapshot = snapshots.get(element.uuid);
+		if (!snapshot || !canStretch(element) || typeof element.size !== 'function') continue;
+
+		let inflate = element.inflate || 0;
+		let half_size = (snapshot.to[axis] - snapshot.from[axis]) / 2;
+		let start_extent = 2 * (half_size + inflate) * snapshot.stretch[axis];
+
+		let fit = fitWholeSize(element, axis, start_extent + direction * context.value);
+		if (!fit) continue;
+
+		setWholeSize(element, axis, fit, snapshotFace(snapshot, element, axis, hold_high), !hold_high);
+		if (typeof element.mapAutoUV === 'function') {
+			element.mapAutoUV({axis, direction});
+		}
+		affected.push(element);
+	}
+
+	for (let element of affected) {
+		if (element.visibility !== false && element.preview_controller) {
+			if (element.preview_controller.updateGeometry) element.preview_controller.updateGeometry(element);
+			if (element.box_uv && element.preview_controller.updateUV) element.preview_controller.updateUV(element);
+		}
+	}
+	if (affected.length && typeof updateNslideValues === 'function') updateNslideValues();
+	if (typeof Blockbench !== 'undefined' && Blockbench.setCursorTooltip && typeof trimFloatNumber === 'function') {
+		Blockbench.setCursorTooltip(trimFloatNumber(direction * context.value));
+	}
+	return affected.length > 0;
+}
+
 /** Rolls each selected cube's stretch into whole units of size, leaving the rendered box alone. */
 function bakeStretchIntoSize() {
 	let cubes = Cube.all.filter(cube => cube.selected && canStretch(cube));
@@ -646,6 +747,31 @@ function patchVertexSnap() {
 	}
 }
 
+function patchTool() {
+	if (typeof Tool !== 'function') return;
+
+	resize_stretch_tool = new Tool(TOOL_ID, {
+		name: 'Resize + Stretch',
+		description: 'Resize a cube by whole units of size and let stretch cover the fraction that will not fit, keeping the opposite face anchored. Shift snaps to whole units, Ctrl goes finer.',
+		icon: 'straighten',
+		category: 'tools',
+		selectFace: true,
+		transformerMode: 'scale',
+		toolbar: 'main_tools',
+		transform_toolbar: 'element_size',
+		alt_tool: 'resize_tool',
+		modes: ['edit'],
+		condition: {features: ['stretch_cubes'], modes: ['edit']}
+	});
+
+	// Next to the Stretch tool, which is the one it is a variation on
+	if (typeof Toolbars !== 'undefined' && Toolbars.tools && Toolbars.tools.children) {
+		let children = Toolbars.tools.children;
+		let index = children.findIndex(child => child === 'stretch_tool' || (child && child.id === 'stretch_tool'));
+		Toolbars.tools.add(resize_stretch_tool, index === -1 ? undefined : index + 1);
+	}
+}
+
 function patchBakeAction() {
 	if (typeof Action !== 'function') return;
 
@@ -684,10 +810,17 @@ function unpatchVertexSnap() {
 	}
 	mode_option_added = false;
 
-	// Action.delete() takes itself back out of any toolbar it was added to
+	// delete() takes these back out of any toolbar they were added to
 	if (bake_action) {
 		bake_action.delete();
 		bake_action = null;
+	}
+	if (resize_stretch_tool) {
+		if (typeof Toolbox !== 'undefined' && Toolbox.selected === resize_stretch_tool && BarItems.resize_tool) {
+			BarItems.resize_tool.select();
+		}
+		resize_stretch_tool.delete();
+		resize_stretch_tool = null;
 	}
 }
 
@@ -738,6 +871,7 @@ function patchResize() {
 function patch() {
 	patchResize();
 	patchVertexSnap();
+	patchTool();
 	patchBakeAction();
 	edit_module = typeof TransformerModule !== 'undefined' && TransformerModule.modules && TransformerModule.modules.edit;
 	if (!edit_module) {
@@ -752,6 +886,9 @@ function patch() {
 	originals.onCancel = edit_module.onCancel;
 
 	wrappers.calculateOffset = function (context) {
+		if (context && context.point && toolActive()) {
+			return toolOffset(context);
+		}
 		if (enabled() && stretchDrag() && context && context.point) {
 			return stretchOffset(context);
 		}
@@ -760,17 +897,36 @@ function patch() {
 
 	wrappers.onStart = function (context) {
 		let result = originals.onStart.call(this, context);
-		if (enabled() && stretchDrag()) takeSnapshots();
+		// Core's onStart opens the undo entry whatever the tool, so both paths only
+		// need their own drag-start snapshot on top of it.
+		if (toolActive() || (enabled() && stretchDrag())) takeSnapshots();
 		return result;
 	};
 
 	wrappers.onMove = function (context) {
+		if (toolActive()) {
+			// Core has no branch for this tool, so it owns the move outright
+			if (snapshots.size) {
+				applyToolResize(context);
+				if (typeof updateSelection === 'function') updateSelection();
+			}
+			return;
+		}
 		let result = originals.onMove.call(this, context);
 		if (enabled() && stretchDrag() && snapshots.size) anchorOppositeSide(context);
 		return result;
 	};
 
 	wrappers.onEnd = function (context) {
+		if (toolActive()) {
+			snapshots.clear();
+			if (context && context.has_changed && context.keep_changes) {
+				refreshUVPanel();
+				Undo.finishEdit('Resize and stretch');
+			}
+			if (typeof updateSelection === 'function') updateSelection();
+			return;
+		}
 		snapshots.clear();
 		return originals.onEnd.call(this, context);
 	};

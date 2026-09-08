@@ -21,6 +21,8 @@ Requires Blockbench 5.0.5 or newer.
 
 **Resizing a stretched cube stays anchored.** Growing a cube's size by `d` used to move the anchored face by `(d / 2) * (1 - stretch)`. It now stays put — on the gizmo, the size sliders and keyboard nudges alike.
 
+**A Resize + Stretch tool.** Sits next to the Stretch tool in the toolbar. Drag a handle and the cube grows by whole units of size, with stretch covering only the fraction that will not fit, opposite face anchored. The drag steps in 1/16 of a unit so it usually lands part way through a unit, which is the point. Hold **Shift** to snap to whole units for a plain resize with no stretch at all, **Ctrl** for 1/64 steps, both for 1/256.
+
 **Vertex snap gains a Stretch mode.** Pick a corner, pick a target, and the cube stretches to reach it with the opposite corner anchored. Handy for closing the gap between two cubes at different angles.
 
 Core has a vertex snap *scale* mode, but it is gated behind `condition: () => !Format.integer_size`, so it is hidden and inert in the Hytale formats — and scaling would change the cube's size, which is what the integer size rule exists to prevent. Stretching reaches the same place while leaving size and UVs alone.
@@ -96,4 +98,4 @@ Implementation is a wrapper around `TransformerModule.modules.edit` for the stre
 node test_anchored_stretch.js
 ```
 
-No dependencies. The harness mocks the parts of Blockbench the plugin touches, including copies of core's stretch and resize drag logic, the cube render formula, and enough of THREE for the vertex snap path, then simulates gizmo drags and snaps and checks which rendered faces moved and by how much. 90 cases covering both handle directions, inflate, off-centre, rotated and already-stretched cubes, multi-selection, the modifier factors, snapping independence, drift over long drags, whole-size fitting across a range of targets, undo/cancel, and clean unload.
+No dependencies. The harness mocks the parts of Blockbench the plugin touches, including copies of core's stretch and resize drag logic, the cube render formula, and enough of THREE for the vertex snap path, then simulates gizmo drags and snaps and checks which rendered faces moved and by how much. 107 cases covering both handle directions, inflate, off-centre, rotated and already-stretched cubes, multi-selection, the modifier factors, snapping independence, drift over long drags, whole-size fitting across a range of targets, undo/cancel, and clean unload.
