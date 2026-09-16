@@ -2,6 +2,47 @@
 
 Generated from `changelog.json` by `scripts/changelog.mjs`. Edit that file, not this one.
 
+## v1.9.2 - All six handles
+
+_2026-09-16_
+
+### Fixed
+
+- The Resize + Stretch tool now works on all six handles. Dragging the west, down or north one did nothing you could see, because the tool anchored the face you had hold of and moved the far one instead.
+- Blockbench only works out which end of the cube a drag grabbed for the two tools it ships itself, so the tool now reads the handle name off the gizmo rather than trusting what it is handed.
+
+## v1.9.1 - Whole units first
+
+_2026-09-08_
+
+### Changed
+
+- The Resize + Stretch tool drags in whole units with nothing held, so it behaves like a plain resize and adds no stretch unless you ask for it. Shift halves the step, Ctrl quarters it, and Ctrl+Shift stops snapping altogether.
+
+## v1.9.0 - Resize + Stretch tool
+
+_2026-09-08_
+
+### Added
+
+- A Resize + Stretch tool in the toolbar, next to the Stretch tool. Drag a handle and the cube grows by whole units of size, with stretch covering only the fraction that will not fit and the opposite face staying put. Hold Shift to snap to whole units for a plain resize, Ctrl for finer steps.
+
+## v1.8.3 - UV panel repaints straight away
+
+_2026-09-08_
+
+### Fixed
+
+- The UV map redraws as soon as Resize + Stretch or Bake Stretch into Size changes a cube, instead of waiting until you move the pointer over the UV panel.
+
+## v1.8.2 - UV follows the size
+
+_2026-09-07_
+
+### Fixed
+
+- The UV map now follows the cube when Resize + Stretch or Bake Stretch into Size changes its size. The texels the resize added were missing from the UV map until you nudged a face by hand.
+
 ## v1.8.1 - Readable numbers
 
 _2026-09-06_

@@ -235,5 +235,19 @@
         ]
       }
     ]
+  },
+  "1.9.2": {
+    "title": "All six handles",
+    "author": "Embody Games",
+    "date": "2026-09-16",
+    "categories": [
+      {
+        "title": "Fixed",
+        "list": [
+          "The Resize + Stretch tool now works on all six handles. Dragging the west, down or north one did nothing you could see, because the tool anchored the face you had hold of and moved the far one instead.",
+          "Blockbench only works out which end of the cube a drag grabbed for the two tools it ships itself, so the tool now reads the handle name off the gizmo rather than trusting what it is handed."
+        ]
+      }
+    ]
   }
 }

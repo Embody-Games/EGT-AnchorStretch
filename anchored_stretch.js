@@ -104,7 +104,7 @@
  * difference is small.
  */
 
-const PLUGIN_VERSION = '1.9.1';
+const PLUGIN_VERSION = '1.9.2';
 const PLUGIN_ID = 'anchored_stretch';
 const SETTING_ID = 'anchored_stretch_tool';
 const RESIZE_SETTING_ID = 'anchored_stretch_resize';
@@ -494,6 +494,35 @@ function toolActive() {
 	return Format && Format.stretch_cubes && Toolbox.selected && Toolbox.selected.id === TOOL_ID;
 }
 
+/**
+ * Which end of the cube the drag grabbed: 1 for X/Y/Z, -1 for NX/NY/NZ.
+ *
+ * Core works this out in transform_gizmo.js's onPointerDown, but only for the two
+ * tools it ships:
+ *
+ *     scope.axis = intersect.object.name;
+ *     ...
+ *     if (Toolbox.selected.id === 'resize_tool' || Toolbox.selected.id === 'stretch_tool') {
+ *         scope.direction = scope.axis.substr(0, 1) !== 'N'
+ *     }
+ *
+ * For any other tool id `direction` keeps whatever the last resize or stretch drag
+ * left in it, so every handle arrives claiming the same end of the cube. The three
+ * negative handles then anchor the face being dragged and move the opposite one,
+ * which looks like the handle doing nothing at all.
+ *
+ * The handle's own name is assigned a few lines above that and is not gated on the
+ * tool, so read it from there and apply core's test ourselves. Falls back to what
+ * core passed in if the gizmo cannot be reached.
+ */
+function toolDirection(context) {
+	let handle = typeof Transformer !== 'undefined' && Transformer && Transformer.axis;
+	if (typeof handle === 'string' && handle.length) {
+		return handle.charAt(0) === 'N' ? -1 : 1;
+	}
+	return context && context.direction === -1 ? -1 : 1;
+}
+
 /** Shift snaps to whole units, Ctrl goes finer, both together finer still. */
 function toolStep(event) {
 	let overrides = (typeof Pressing !== 'undefined' && Pressing.overrides) || {};
@@ -539,7 +568,7 @@ function applyToolResize(context) {
 	let axis = context.axis_number;
 	if (typeof axis !== 'number' || axis < 0 || axis > 2) return;
 
-	let direction = context.direction === -1 ? -1 : 1;
+	let direction = toolDirection(context);
 	let hold_high = direction === -1;
 	let affected = [];
 

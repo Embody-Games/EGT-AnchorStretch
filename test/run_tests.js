@@ -408,11 +408,19 @@ const Plugin = {
 	}
 };
 
+/*
+ * The gizmo itself, as opposed to TransformerModule above. Only `axis` matters here:
+ * core assigns it the name of the handle you grabbed ('X', 'NX', ...) on pointer down,
+ * for every tool. `direction` is the field core keeps up to date only for its own
+ * resize and stretch tools, which is why a plugin tool has to read the handle name.
+ */
+const Transformer = {axis: 'X'};
+
 Object.assign(globalThis, {
 	settings, Setting, Format, Toolbox, Outliner, Mesh, BarItems, Pressing, Blockbench,
 	trimFloatNumber, updateNslideValues, TransformerModule, Plugin, Cube,
 	THREE, Vertexsnap, Undo, Canvas, OutlinerElement, tl, UVEditor,
-	Action, Tool, Toolbar, Toolbars, Modes
+	Action, Tool, Toolbar, Toolbars, Modes, Transformer
 });
 
 // Array.remove, used by the plugin when it takes its mode back out of the dropdown
@@ -1715,13 +1723,22 @@ test('baking is wrapped in a named undo entry', () => {
 
 console.log('\nAnchored Stretch — resize + stretch tool\n');
 
-/** Drag a resize-style handle with the Resize + Stretch tool selected. */
+/**
+ * Drag a resize-style handle with the Resize + Stretch tool selected.
+ *
+ * `context.direction` is fed the opposite of the truth on purpose. Core only keeps
+ * that field up to date for resize_tool and stretch_tool, so under any other tool it
+ * arrives holding whatever the last drag with one of those left behind. Handing it
+ * the wrong end is what makes these cases prove the tool reads Transformer.axis, the
+ * handle name core does set for every tool.
+ */
 function toolDrag(cubes, handle, distances, {shift = false, ctrl = false} = {}) {
 	let module = TransformerModule.modules.edit;
 	let previous = Toolbox.selected;
 	Toolbox.selected = BarItems.anchored_resize_stretch_tool;
 	Outliner.selected = cubes;
-	let direction = handle[0] === 'N' ? -1 : 1;
+	Transformer.axis = handle;
+	let direction = handle[0] === 'N' ? 1 : -1;
 	let axis = handle.replace(/^N/, '').toLowerCase();
 	undo_log.length = 0;
 
